@@ -62,5 +62,18 @@ class TestEuclideanSPAModel(unittest.TestCase):
                 self.assertTrue(np.allclose(output_states, expected_states,
                                             rtol=1.e-4, atol=1.e-5))
 
+    def test_gamma_subproblem(self):
+        n = 5
+        T = 100
+        dataset = generate_random_dataset(n, T)
+        max_clusters = 30
+        eps_s_sq_vals = np.random.random((5,))
+
+        for k in range(1, max_clusters + 1):
+            for eps_s_sq in eps_s_sq_vals:
+                model = SPA2Model(dataset, k, eps_s_sq=eps_s_sq)
+                model.states = np.random.random((k, n))
+                model.solve_subproblem_gamma()
+
 if __name__ == "__main__":
     unittest.main()

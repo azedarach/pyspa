@@ -1,5 +1,6 @@
 import numpy as np
 
+from .constraints import simplex_projection
 from .optimizers import solve_qp
 
 class SPA2Model(object):
@@ -105,13 +106,13 @@ class SPA2Model(object):
     def solve_subproblem_gamma(self):
         # construct matrices for QP subproblem for affiliations
         # N.B. no imposed regularization on affiliations currently
-        gamma_vec_dim = self.clusters * self.statistics_size
         q_vecs = -2 * np.matmul(self.dataset, np.transpose(self.states))
         P = 2 * np.matmul(self.states, np.transpose(self.states))
         # @todo replace with parallel equivalent
         for i in range(self.statistics_size):
-            self.affiliations[i,:] = solve_qp(P, q_vecs[i,:],
-                                              solver="spgqp")
+            self.affiliations[i,:] = solve_qp(
+                P, q_vecs[i,:], x0=self.affiliations[i,:],
+                qpsolver="spgqp", projector=simplex_projection)
 
     def find_optimal_approx(self, initial_affs, initial_states=None):
         if initial_affs.shape != self.affiliations:
