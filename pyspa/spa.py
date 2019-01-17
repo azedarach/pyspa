@@ -29,7 +29,7 @@ class SPA2Model(object):
         self.eps_s_sq = eps_s_sq
         self.reg_norm = eps_s_sq / (self.feature_dim * self.clusters)
         if self.clusters > 1:
-            self.reg_norm = self.reg_norm / (self.clusters - 1)
+            self.reg_norm = self.reg_norm / (self.clusters - 1.0)
 
         self.stopping_tol = stopping_tol
         self.max_iterations = max_iterations
@@ -66,6 +66,8 @@ class SPA2Model(object):
         return np.sum(np.power(errs, 2))
 
     def states_regularization(self):
+        if self.clusters == 1:
+            return 0
         reg = (self.clusters * np.trace(np.matmul(
             np.transpose(self.states), self.states))
                - np.sum(np.matmul(self.states, np.transpose(self.states))))
@@ -85,16 +87,19 @@ class SPA2Model(object):
 
         q = -2 * np.reshape(gtx, (s_vec_dim,))
 
-        h1_blocks = [[2 * gtg[i,j] * np.eye(self.feature_dim)
+        h1_blocks = [[2 * gtg[i,j] * np.identity(self.feature_dim)
                       for j in range(self.clusters)]
                      for i in range(self.clusters)]
         H1 = np.block(h1_blocks)
         P = H1
         if self.clusters > 1:
-            H2 = self.clusters * np.eye(s_vec_dim) - np.ones(s_vec_dim)
-            P = H1 + 4 * self.reg_norm * H2
+            H2 = (self.clusters * np.identity(s_vec_dim)
+                  - np.block([[np.identity(self.feature_dim)
+                               for j in range(self.clusters)]
+                              for i in range(self.clusters)]))
+            P += 4 * self.reg_norm * H2
 
-        s_soln = solve_qp(P, q, x0=s_guess, qpsolver="spg")
+        s_soln = solve_qp(P, q, x0=s_guess, qpsolver="spg", tol=1.e-5)
         self.states = np.reshape(s_soln, ((self.clusters, self.feature_dim)))
 
     def solve_subproblem_gamma(self):
