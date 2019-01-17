@@ -1,15 +1,22 @@
 import numpy as np
 
+from .optimizers import solve_qp
+
 class SPA2Model(object):
-    def __init__(self, dataset, clusters, eps_s_sq=0, normalize=True,
+    def __init__(self, dataset, clusters, affiliations=None,
+                 eps_s_sq=0, normalize=True,
                  stopping_tol=1.e-2, max_iterations=100):
         if dataset.ndim != 2:
             raise ValueError(
-                "the input dataset must be at least two dimensional")
+                "the input dataset must be two dimensional")
 
         if eps_s_sq < 0:
             raise ValueError(
                 "regularization parameter must be non-negative")
+
+        if clusters < 1:
+            raise ValueError(
+                "the number of clusters must be at least one")
 
         self.dataset = dataset.copy()
         self.statistics_size = self.dataset.shape[0]
@@ -20,11 +27,35 @@ class SPA2Model(object):
 
         self.clusters = clusters
         self.eps_s_sq = eps_s_sq
+        self.reg_norm = eps_s_sq / (self.feature_dim * self.clusters)
+        if self.clusters > 1:
+            self.reg_norm = self.reg_norm / (self.clusters - 1)
 
         self.stopping_tol = stopping_tol
         self.max_iterations = max_iterations
 
-        self.affiliations = np.zeros((self.statistics_size, self.clusters))
+        if affiliations is not None:
+            if affiliations.ndim != 2:
+                raise ValueError(
+                    "the initial affiliations must be two-dimensional")
+            if affiliations.shape[0] != self.statistics_size:
+                raise ValueError(
+                    "affiliations must be provided for all points")
+            if not np.all(affiliations >= 0):
+                raise ValueError(
+                    "affiliations must be non-negative")
+            aff_sums = np.sum(affiliations, axis=1)
+            if not np.allclose(aff_sums, np.ones(self.feature_dim)):
+                raise ValueError(
+                    "affiliations at each time must sum to unity")
+            self.affiliations = affiliations
+        else:
+            self.affiliations = np.random.random(
+                (self.statistics_size, self.clusters))
+            normalisations = np.sum(self.affiliations, axis=1)
+            self.affiliations = np.divide(self.affiliations,
+                                          normalisations[:, np.newaxis])
+
         self.states = np.zeros((self.clusters, self.feature_dim))
 
     def normalize_dataset(self, dataset):
@@ -50,27 +81,31 @@ class SPA2Model(object):
         gtg = np.matmul(np.transpose(self.affiliations), self.affiliations)
 
         s_vec_dim = self.clusters * self.feature_dim
-        c0 = self.trxtx
-        q = -2 * np.reshape(gtx, (s_vec_dim, 1))
+        s_guess = np.ravel(self.states)
+
+        q = -2 * np.reshape(gtx, (s_vec_dim,))
+
         h1_blocks = [[2 * gtg[i,j] * np.eye(self.feature_dim)
                       for j in range(self.clusters)]
                      for i in range(self.clusters)]
         H1 = np.block(h1_blocks)
-        H2 = self.clusters * np.eye(s_vec_dim) - np.ones(s_vec_dim)
-        P = H1 + 4 * self.eps_s_sq * H2 / (s_vec_dim * (self.clusters - 1))
-        s_soln = solve_qp(c0, q, P)
+        P = H1
+        if self.clusters > 1:
+            H2 = self.clusters * np.eye(s_vec_dim) - np.ones(s_vec_dim)
+            P = H1 + 4 * self.reg_norm * H2
+
+        s_soln = solve_qp(P, q, x0=s_guess, qpsolver="spg")
         self.states = np.reshape(s_soln, ((self.clusters, self.feature_dim)))
 
     def solve_subproblem_gamma(self):
         # construct matrices for QP subproblem for affiliations
         # N.B. no imposed regularization on affiliations currently
         gamma_vec_dim = self.clusters * self.statistics_size
-        c0 = self.trxtx
         q_vecs = -2 * np.matmul(self.dataset, np.transpose(self.states))
         P = 2 * np.matmul(self.states, np.transpose(self.states))
         # @todo replace with parallel equivalent
         for i in range(self.statistics_size):
-            self.affiliations[i,:] = solve_qp(0, q_vecs[i,:], P,
+            self.affiliations[i,:] = solve_qp(P, q_vecs[i,:],
                                               solver="spgqp")
 
     def find_optimal_approx(self, initial_affs, initial_states=None):
