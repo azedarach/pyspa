@@ -23,14 +23,14 @@ def solve_qp(p, q, qpsolver="spgqp", **kwargs):
     if qpsolver == "spgqp":
         if "x0" not in kwargs:
             raise ValueError("spgqp solver requires initial guess x0")
-        return spgqp(p, q, kwargs.get("x0"), **kwargs)
+        return spgqp(p, q, **kwargs)
     elif qpsolver == "spg":
         if "x0" not in kwargs:
             raise ValueError("spg solver requires initial guess x0")
-        return spg_qp(p, q, kwargs.get("x0"), **kwargs)
+        return spg_qp(p, q, **kwargs)
     elif qpsolver == "cvxopt":
         return cvxopt_qp(p, q, **kwargs)
     else:
-        raise ValueError("unrecognized solver '" + solver + "'")
+        raise ValueError("unrecognized solver '" + qpsolver + "'")
 
 __all__ = ["spg", "spgqp", "solve_qp", "cvxopt_qp", "quadprog_solvers"]
