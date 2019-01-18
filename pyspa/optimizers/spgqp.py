@@ -29,7 +29,10 @@ def spgqp(p, q, x0, projector=None,
     dinf = projector(xk - gk) - xk
     converged = np.sqrt(np.linalg.norm(dinf)) < tol
 
-    alpha_k = 1.0 / np.max(np.abs(dinf))
+    alpha_k = 1.0
+    if np.max(np.abs(dinf)) != 0:
+        alpha_k = 1.0 / np.max(np.abs(dinf))
+
     f_prev = fk * np.ones(m)
 
     iterations = 0
