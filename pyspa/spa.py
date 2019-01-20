@@ -110,12 +110,17 @@ class SPA2Model(object):
         P = 2 * np.matmul(self.states, np.transpose(self.states))
         # @todo replace with parallel equivalent
         for i in range(self.statistics_size):
-            self.affiliations[i,:] = solve_qp(
-                P, q_vecs[i,:], x0=self.affiliations[i,:],
-                qpsolver="spgqp", projector=simplex_projection)
+            self.affiliations[i,:] = np.ravel(solve_qp(
+                P, q_vecs[i,:], tol=1.e-5,
+                qpsolver="cvxopt", A=np.ones((1,self.clusters)),
+                b=np.ones((1,1)), G=-np.identity(self.clusters),
+                h=np.zeros((self.clusters,1))))
+            # self.affiliations[i,:] = solve_qp(
+            #     P, q_vecs[i,:], x0=self.affiliations[i,:], tol=1.e-5,
+            #     qpsolver="spgqp", projector=simplex_projection)
 
     def find_optimal_approx(self, initial_affs, initial_states=None):
-        if initial_affs.shape != self.affiliations:
+        if initial_affs.shape != self.affiliations.shape:
             raise ValueError(
                 "initial guess for affiliations has incorrect shape")
 
@@ -138,6 +143,6 @@ class SPA2Model(object):
             qf_old = qf_new
             iters += 1
 
-        if iters == max_iterations and delta_qf > self.stopping_tol:
+        if iters == self.max_iterations and delta_qf > self.stopping_tol:
             raise RuntimeError(
                 "failed to converge")

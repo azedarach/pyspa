@@ -1,7 +1,7 @@
 from cvxopt import matrix, spmatrix
 from cvxopt.solvers import options, qp
 
-from numpy import ndarray
+from numpy import asarray, ndarray, ravel
 
 options["show_progress"] = False
 

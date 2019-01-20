@@ -26,6 +26,19 @@ def get_regularized_states(dataset, affiliations, eps_s_sq):
     gtx = np.matmul(np.transpose(affiliations), dataset)
     return np.matmul(H_eps_inv, gtx)
 
+def get_two_cluster_affiliations(x, states):
+    d = x.shape[1]
+    if states.shape[0] != 2:
+        raise ValueError("exact expression only holds for K = 2 clusters")
+    if states.shape[1] != d:
+        raise ValueError("dimension of states must match dimension of data")
+    diff = states[0,:] - states[1,:]
+    denom = np.dot(diff, diff)
+    alpha_1 = np.dot(x - states[1,:], diff) / denom
+    alpha_2 = -np.dot(x - states[0,:], diff) / denom
+    return np.fmax(0, np.hstack([np.fmin(1, alpha_1[:,np.newaxis]),
+                                 np.fmin(1, alpha_2[:,np.newaxis])]))
+
 class TestEuclideanSPAModel(unittest.TestCase):
 
     def test_s_subproblem_solution_no_reg(self):
@@ -62,18 +75,33 @@ class TestEuclideanSPAModel(unittest.TestCase):
                 self.assertTrue(np.allclose(output_states, expected_states,
                                             rtol=1.e-4, atol=1.e-5))
 
-    def test_gamma_subproblem(self):
+    def test_gamma_subproblem_two_clusters(self):
+        k = 2
         n = 5
-        T = 100
+        T = 10
+        np.random.seed(1)
         dataset = generate_random_dataset(n, T)
-        max_clusters = 30
         eps_s_sq_vals = np.random.random((5,))
 
-        for k in range(1, max_clusters + 1):
-            for eps_s_sq in eps_s_sq_vals:
-                model = SPA2Model(dataset, k, eps_s_sq=eps_s_sq)
-                model.states = np.random.random((k, n))
-                model.solve_subproblem_gamma()
+        for eps_s_sq in eps_s_sq_vals:
+            model = SPA2Model(dataset, k, eps_s_sq=eps_s_sq)
+            model.states = np.random.random((k, n))
+            model.solve_subproblem_gamma()
+            output_aff = model.affiliations
+            exact_aff = get_two_cluster_affiliations(dataset, model.states)
+            print("dataset = ", dataset)
+            print("states = ", model.states)
+            print("output_aff = ", output_aff)
+            print("exact_aff = ", exact_aff)
+            print("difference = ", output_aff - exact_aff)
+            output_qf =  model.eval_quality_function()
+            model.affiliations = exact_aff
+            exact_qf =  model.eval_quality_function()
+            print("output_qf = ", output_qf)
+            print("exact_qf = ", exact_qf)
+            print("diff = ", output_qf - exact_qf)
+            self.assertTrue(np.allclose(output_aff, exact_aff,
+                                        rtol=1.e-5, atol=1.e-5))
 
 if __name__ == "__main__":
     unittest.main()
