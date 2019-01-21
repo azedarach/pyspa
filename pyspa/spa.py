@@ -6,7 +6,7 @@ from .optimizers import solve_qp
 class SPA2Model(object):
     def __init__(self, dataset, clusters, affiliations=None,
                  eps_s_sq=0, normalize=True,
-                 stopping_tol=1.e-2, max_iterations=100):
+                 stopping_tol=1.e-2, max_iterations=200):
         if dataset.ndim != 2:
             raise ValueError(
                 "the input dataset must be two dimensional")
@@ -101,6 +101,8 @@ class SPA2Model(object):
             P += 4 * self.reg_norm * H2
 
         s_soln = solve_qp(P, q, x0=s_guess, qpsolver="spg", tol=1.e-5)
+        if s_soln is None:
+            raise RuntimeError("failed to solve S subproblem")
         self.states = np.reshape(s_soln, ((self.clusters, self.feature_dim)))
 
     def solve_subproblem_gamma(self):
@@ -110,14 +112,17 @@ class SPA2Model(object):
         P = 2 * np.matmul(self.states, np.transpose(self.states))
         # @todo replace with parallel equivalent
         for i in range(self.statistics_size):
-            self.affiliations[i,:] = np.ravel(solve_qp(
-                P, q_vecs[i,:], tol=1.e-5,
-                qpsolver="cvxopt", A=np.ones((1,self.clusters)),
-                b=np.ones((1,1)), G=-np.identity(self.clusters),
-                h=np.zeros((self.clusters,1))))
-            # self.affiliations[i,:] = solve_qp(
-            #     P, q_vecs[i,:], x0=self.affiliations[i,:], tol=1.e-5,
-            #     qpsolver="spgqp", projector=simplex_projection)
+            gamma_sol = solve_qp(
+                P, q_vecs[i,:], x0=self.affiliations[i,:], tol=1.e-5,
+                qpsolver="spgqp", projector=simplex_projection)
+            #gamma_sol = solve_qp(
+            #    P, q_vecs[i,:], tol=1.e-5,
+            #    qpsolver="cvxopt", A=np.ones((1,self.clusters)),
+            #    b=np.ones((1,1)), G=-np.identity(self.clusters),
+            #    h=np.zeros((self.clusters,1)))
+            if gamma_sol is None:
+                raise RuntimeError("failed to solve Gamma subproblem")
+            self.affiliations[i,:] = np.ravel(gamma_sol)
 
     def find_optimal_approx(self, initial_affs, initial_states=None):
         if initial_affs.shape != self.affiliations.shape:
