@@ -16,7 +16,7 @@ try:
     from .cvxopt_interface import cvxopt_qp
     quadprog_solvers.append("cvxopt_qp")
 except ImportError:
-    def cvxopt_qp(p, q):
+    def cvxopt_qp(p, q, **kwargs):
         raise ImportError("CVXOPT could not be imported")
 
 def solve_qp(p, q, qpsolver="spgqp", **kwargs):
