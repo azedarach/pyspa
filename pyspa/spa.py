@@ -36,7 +36,7 @@ class SPA2Model(object):
 
         self.normalize = normalize
         if self.normalize:
-            self.normalization = self.statistics_size * self.feature_dim
+            self.normalization = 1.0 * self.statistics_size * self.feature_dim
         else:
             self.normalization = 1.0
 

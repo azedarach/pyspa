@@ -7,23 +7,34 @@ from pyspa.spa import SPA2Model
 def generate_random_dataset(feature_dim, statistics_size):
     return np.random.random((statistics_size, feature_dim))
 
-def get_unregularized_states(dataset, affiliations):
-    gtg = np.matmul(np.transpose(affiliations), affiliations)
+def get_unregularized_states(dataset, affiliations, normalize=True):
+    normalization = 1.0
+    if normalize:
+        T = dataset.shape[0]
+        d = dataset.shape[1]
+        normalization = 1.0 * T * d
+
+    gtg = np.matmul(np.transpose(affiliations), affiliations) / normalization
     gtgpinv = np.linalg.pinv(gtg)
-    gtx = np.matmul(np.transpose(affiliations), dataset)
+    gtx = np.matmul(np.transpose(affiliations), dataset) / normalization
+
     return np.matmul(gtgpinv, gtx)
 
-def get_regularized_states(dataset, affiliations, eps_s_sq):
+def get_regularized_states(dataset, affiliations, eps_s_sq, normalize=True):
     k = affiliations.shape[1]
     d = dataset.shape[1]
+    normalization = 1.0
+    if normalize:
+        T = dataset.shape[0]
+        normalization = 1.0 * T * d
     if k == 1:
         return get_unregularized_states(dataset, affiliations)
-    gtg = np.matmul(np.transpose(affiliations), affiliations)
+    gtg = np.matmul(np.transpose(affiliations), affiliations) / normalization
     reg = (2 * eps_s_sq * (k * np.identity(k) - np.ones((k,k)))
            / (d * k * (k - 1.0)))
     H_eps = gtg + reg
     H_eps_inv = np.linalg.inv(H_eps)
-    gtx = np.matmul(np.transpose(affiliations), dataset)
+    gtx = np.matmul(np.transpose(affiliations), dataset) / normalization
     return np.matmul(H_eps_inv, gtx)
 
 def get_two_cluster_affiliations(x, states):
@@ -70,8 +81,8 @@ class TestEuclideanSPAModel(unittest.TestCase):
                 model.solve_subproblem_s()
                 output_states = model.states
                 expected_states = get_regularized_states(
-                    model.dataset, model.affiliations, eps_s_sq)
-                model.states = expected_states
+                    model.dataset, model.affiliations, eps_s_sq,
+                    model.normalize)
                 self.assertTrue(np.allclose(output_states, expected_states,
                                             rtol=1.e-4, atol=1.e-5))
 
