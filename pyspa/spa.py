@@ -3,7 +3,7 @@ import numpy as np
 from .constraints import simplex_projection
 from .optimizers import solve_qp
 
-class SPA2Model(object):
+class EuclideanSPAModel(object):
     def __init__(self, dataset, clusters, affiliations=None,
                  eps_s_sq=0, normalize=True,
                  stopping_tol=1.e-5, max_iterations=500,

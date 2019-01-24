@@ -3,7 +3,7 @@ import argparse
 import matplotlib.pyplot as plt
 import numpy as np
 
-from pyspa.spa import SPA2Model
+from pyspa.spa import EuclideanSPAModel
 
 def generate_dataset(length=500, state_prob=0.5, poisson_mean=0.5,
                      lower_bound=0.5, upper_bound=1.5):
@@ -73,7 +73,7 @@ def main():
                               args.poisson_mean, args.lower_bound,
                               args.upper_bound)
 
-    model = SPA2Model(X[:,np.newaxis], args.n_clusters)
+    model = EuclideanSPAModel(X[:,np.newaxis], args.n_clusters)
 
     gamma0 = np.random.random((args.length, args.n_clusters))
     normalizations = np.sum(gamma0, axis=1)

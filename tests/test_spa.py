@@ -2,7 +2,7 @@ import unittest
 
 import numpy as np
 
-from pyspa.spa import SPA2Model
+from pyspa.spa import EuclideanSPAModel
 
 def generate_random_dataset(feature_dim, statistics_size):
     return np.random.random((statistics_size, feature_dim))
@@ -60,7 +60,7 @@ class TestEuclideanSPAModel(unittest.TestCase):
         eps_s_sq = 0
 
         for k in range(1, max_clusters + 1):
-            model = SPA2Model(dataset, k, eps_s_sq=eps_s_sq)
+            model = EuclideanSPAModel(dataset, k, eps_s_sq=eps_s_sq)
             model.solve_subproblem_s()
             output_states = model.states
             expected_states = get_unregularized_states(
@@ -77,7 +77,7 @@ class TestEuclideanSPAModel(unittest.TestCase):
 
         for k in range(1, max_clusters + 1):
             for eps_s_sq in eps_s_sq_vals:
-                model = SPA2Model(dataset, k, eps_s_sq=eps_s_sq)
+                model = EuclideanSPAModel(dataset, k, eps_s_sq=eps_s_sq)
                 model.solve_subproblem_s()
                 output_states = model.states
                 expected_states = get_regularized_states(
@@ -95,7 +95,7 @@ class TestEuclideanSPAModel(unittest.TestCase):
         eps_s_sq_vals = np.random.random((5,))
 
         for eps_s_sq in eps_s_sq_vals:
-            model = SPA2Model(dataset, k, eps_s_sq=eps_s_sq)
+            model = EuclideanSPAModel(dataset, k, eps_s_sq=eps_s_sq)
             model.states = np.random.random((k, n))
             model.solve_subproblem_gamma()
             output_aff = model.affiliations
