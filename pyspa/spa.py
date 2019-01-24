@@ -7,6 +7,7 @@ class SPA2Model(object):
     def __init__(self, dataset, clusters, affiliations=None,
                  eps_s_sq=0, normalize=True,
                  stopping_tol=1.e-5, max_iterations=500,
+                 gamma_solver="spgqp",
                  verbose=False, use_exact_states=False,
                  use_trial_step=False):
 
@@ -42,6 +43,7 @@ class SPA2Model(object):
 
         self.stopping_tol = stopping_tol
         self.max_iterations = max_iterations
+        self.gamma_solver = gamma_solver.lower()
 
         self.verbose = verbose
         self.use_exact_states = use_exact_states
@@ -163,16 +165,22 @@ class SPA2Model(object):
 
         # @todo replace with parallel equivalent
         for i in range(self.statistics_size):
-            gamma_sol = solve_qp(
-                P, q_vecs[i,:], x0=self.affiliations[i,:], tol=1.e-4,
-                qpsolver="spgqp", projector=simplex_projection)
-            # gamma_sol = solve_qp(
-            #    P, q_vecs[i,:], tol=1.e-5,
-            #    qpsolver="cvxopt", A=np.ones((1,self.clusters)),
-            #    b=np.ones((1,1)), G=-np.identity(self.clusters),
-            #    h=np.zeros((self.clusters,1)))
+            if self.gamma_solver == "spgqp":
+                gamma_sol = solve_qp(
+                    P, q_vecs[i,:], x0=self.affiliations[i,:], tol=1.e-4,
+                    qpsolver="spgqp", projector=simplex_projection)
+            elif self.gamma_solver == "cvxopt":
+                gamma_sol = solve_qp(
+                    P, q_vecs[i,:], tol=1.e-5,
+                    qpsolver="cvxopt", A=np.ones((1,self.clusters)),
+                    b=np.ones((1,1)), G=-np.identity(self.clusters),
+                    h=np.zeros((self.clusters,1)))
+            else:
+                raise RuntimeError("unrecognized solver for Gamma subproblem")
+
             if gamma_sol is None:
                 raise RuntimeError("failed to solve Gamma subproblem")
+
             self.affiliations[i,:] = np.ravel(gamma_sol)
 
         if self.verbose:
