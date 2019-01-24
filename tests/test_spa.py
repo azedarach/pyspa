@@ -100,17 +100,9 @@ class TestEuclideanSPAModel(unittest.TestCase):
             model.solve_subproblem_gamma()
             output_aff = model.affiliations
             exact_aff = get_two_cluster_affiliations(dataset, model.states)
-            print("dataset = ", dataset)
-            print("states = ", model.states)
-            print("output_aff = ", output_aff)
-            print("exact_aff = ", exact_aff)
-            print("difference = ", output_aff - exact_aff)
             output_qf =  model.eval_quality_function()
             model.affiliations = exact_aff
             exact_qf =  model.eval_quality_function()
-            print("output_qf = ", output_qf)
-            print("exact_qf = ", exact_qf)
-            print("diff = ", output_qf - exact_qf)
             self.assertTrue(np.allclose(output_aff, exact_aff,
                                         rtol=1.e-5, atol=1.e-5))
 
