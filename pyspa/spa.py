@@ -26,7 +26,6 @@ class EuclideanSPAModel(object):
         self.dataset = dataset.copy()
         self.statistics_size = self.dataset.shape[0]
         self.feature_dim = self.dataset.shape[1]
-        self.trxtx = np.sum(np.power(self.dataset, 2))
 
         self.clusters = clusters
         self.eps_s_sq = eps_s_sq
