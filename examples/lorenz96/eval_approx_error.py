@@ -74,7 +74,7 @@ def evaluate_approximation_error(model, data, measure="euclidean"):
     errors = data - reconstruction
 
     if measure == "euclidean":
-        return np.mean(np.sqrt(np.sum(np.power(errors, 2), axis=1)))
+        return np.sum(np.power(errors, 2)) / np.size(errors)
     else:
         raise ValueError("unrecognized error norm")
 
@@ -118,28 +118,39 @@ def fit_spa_model_with_oos(dataset, clusters, regularizations,
     idx = 0
     for k in clusters:
         for eps in regularizations:
-            (model, qf) = fit_single_spa_model(training_data, k, eps,
-                                               annealing_steps, verbose)
-            approx_err = evaluate_approximation_error(model, validation_data)
+            try:
+                (model, qf) = fit_single_spa_model(training_data, k, eps,
+                                                   annealing_steps, verbose)
+                approx_err = evaluate_approximation_error(model,
+                                                          validation_data)
+            except ValueError:
+                model = None
+                qf = np.NaN
+                approx_err = np.NaN
+            except RuntimeError:
+                model = None
+                qf = np.NaN
+                approx_err = np.NaN
+
             results[idx] = (k, eps, model, qf, approx_err)
             idx += 1
 
     return results
 
 def fit_spa_model_with_kfold(dataset, clusters, regularizations,
-                             annealing_steps, k, verbose=False):
+                             annealing_steps, n_folds, verbose=False):
 
-    if k < 2:
+    if n_folds < 2:
         raise ValueError("number of folds must be at least 2")
 
     statistics_size = dataset.shape[0]
     fold_indices = np.random.permutation(statistics_size)
-    folds = k * [None]
-    fold_size = int(np.floor(statistics_size / k))
-    for i in range(k - 1):
+    folds = n_folds * [None]
+    fold_size = int(np.floor(statistics_size / n_folds))
+    for i in range(n_folds - 1):
         indices = fold_indices[i * fold_size : (i+1) * fold_size]
         folds[i] = dataset[indices,:]
-    folds[k - 1] = dataset[fold_indices[(k - 1) * fold_size:],:]
+    folds[n_folds - 1] = dataset[fold_indices[(n_folds - 1) * fold_size:],:]
 
     results = np.size(clusters) * np.size(regularizations) * [None]
     idx = 0
@@ -148,22 +159,37 @@ def fit_spa_model_with_kfold(dataset, clusters, regularizations,
             avg_approx_err = 0.0
             best_model = None
             best_qf = 9.e99
-            for i in k:
+            fits = 0
+            for i in range(n_folds):
                 validation_data = folds[i]
-                training_data = np.concatenate([folds[f] for f in k if f != i])
-                (model, qf) = fit_single_spa_model(training_data, k, eps,
-                                                   annealing_steps, verbose)
-                if best_model is None:
-                    best_model = model
-                    best_qf = qf
-                else:
-                    if qf < best_qf:
+                training_data = np.concatenate([folds[f] for f in range(n_folds)
+                                                if f != i])
+                try:
+                    (model, qf) = fit_single_spa_model(
+                        training_data, k, eps,
+                        annealing_steps, verbose)
+                    if best_model is None:
                         best_model = model
                         best_qf = qf
+                    else:
+                        if qf < best_qf:
+                            best_model = model
+                            best_qf = qf
 
-                approx_err = evaluate_approximation_error(model,
-                                                          validation_data)
-                avg_approx_err = (approx_err + i * avg_approx_err) / (i + 1)
+                    approx_err = evaluate_approximation_error(model,
+                                                              validation_data)
+                    avg_approx_err = ((approx_err + fits * avg_approx_err)
+                                      / (fits + 1))
+                    fits += 1
+                except RuntimeError:
+                    continue
+                except ValueError:
+                    continue
+
+            if best_model is None:
+                best_qf = np.NaN
+                avg_approx_error = np.NaN
+
             results[idx] = (k, eps, best_model, best_qf, avg_approx_err)
             idx += 1
 
