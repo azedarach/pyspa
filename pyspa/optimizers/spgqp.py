@@ -4,7 +4,7 @@ import numpy as np
 # where x is required to lie in a d-dimensional simplex
 # and x0 is a d-dimensional vector
 def spgqp(p, q, x0, projector=None,
-          tol=1.e-3, max_iterations=100,
+          tol=1.e-3, max_iterations=10000,
           m=7, gamma=1.e-4, sigma=0.99, alpha_max=1e4):
 
     if projector is None:
@@ -43,7 +43,8 @@ def spgqp(p, q, x0, projector=None,
         dkpdk = np.dot(dk, pdk)
         dkgk = np.dot(dk, gk)
 
-        converged = np.sqrt(np.linalg.norm(dk)) < tol
+        converged = np.sqrt(np.linalg.norm(projector(xk - gk) - xk)) < tol
+#        converged = np.sqrt(np.linalg.norm(dk)) < tol
 
         f_max = np.max(f_prev)
         xi = (f_max - fk) / dkpdk
@@ -60,6 +61,7 @@ def spgqp(p, q, x0, projector=None,
         f_prev[-1] = fk
 
         alpha_k = dkdk / dkpdk
+
         iterations += 1
 
     if iterations == max_iterations and not converged:
