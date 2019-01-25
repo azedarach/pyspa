@@ -57,6 +57,8 @@ def get_file_header():
 
 def write_timings(timing_results, output_file=""):
     header = get_file_header()
+    if output_file:
+        header = header + "\n"
     lines = [header]
     fmt_string = "{:d},{:d},{:<14.8e},{:14.8e},{:d},{:14.8e},{:14.8e},{:<14.8e}"
     for run in timing_results:
