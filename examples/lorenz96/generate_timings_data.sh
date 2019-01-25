@@ -1,8 +1,6 @@
 #!/bin/bash
 
 model="lorenz96"
-forcing_type="constant"
-prefix="${model}_${forcing_type}_forcing"
 
 PYTHON="python"
 run_timings="time_${model}_training.py"
@@ -23,16 +21,22 @@ if test ! -d $output_dir ; then
     mkdir $output_dir
 fi
 
+forcing_types="constant periodic"
 forcings="3 5.3 7 10"
 time_step="0.01"
 
-for f in $forcings ; do
-    data_files=$(ls $input_dir/${prefix}_F-${f}_length-*_time_step-${time_step}.csv)
-    output_file="${output_dir}/${prefix}_F-${f}_time_step-${time_step}_timings.csv"
-    $PYTHON $run_timings \
-            --min-clusters $min_clusters \
-            --max-clusters $max_clusters \
-            --discard-fraction $discard_fraction \
-            --output-file "$output_file" \
-            $data_files
+for t in $forcing_types ; do
+    prefix="${model}_${t}_forcing"
+    input_suffix="_time_step-${time_step}.csv"
+    output_suffix="_time_step-${time_step}_timings.csv"
+    for f in $forcings ; do
+        data_files=$(ls $input_dir/${prefix}_F-${f}_length-*${input_suffix})
+        output_file="${output_dir}/${prefix}_F-${f}${output_suffix}"
+        $PYTHON $run_timings \
+                --min-clusters $min_clusters \
+                --max-clusters $max_clusters \
+                --discard-fraction $discard_fraction \
+                --output-file "$output_file" \
+                $data_files
+    done
 done
