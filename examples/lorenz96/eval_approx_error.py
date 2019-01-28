@@ -148,9 +148,8 @@ def fit_spa_model_with_kfold(dataset, clusters, regularizations,
     folds = n_folds * [None]
     fold_size = int(np.floor(statistics_size / n_folds))
     for i in range(n_folds - 1):
-        indices = fold_indices[i * fold_size : (i+1) * fold_size]
-        folds[i] = dataset[indices,:]
-    folds[n_folds - 1] = dataset[fold_indices[(n_folds - 1) * fold_size:],:]
+        folds[i] = np.sort(fold_indices[i * fold_size : (i+1) * fold_size])
+    folds[n_folds - 1] = np.sort(fold_indices[(n_folds - 1) * fold_size:])
 
     results = np.size(clusters) * np.size(regularizations) * [None]
     idx = 0
@@ -161,9 +160,10 @@ def fit_spa_model_with_kfold(dataset, clusters, regularizations,
             best_qf = 9.e99
             fits = 0
             for i in range(n_folds):
-                validation_data = folds[i]
-                training_data = np.concatenate([folds[f] for f in range(n_folds)
-                                                if f != i])
+                cv_mask = np.ones(len(dataset), dtype=bool)
+                cv_mask[folds[i]] = False
+                training_data = dataset[cv_mask]
+                validation_data = dataset[folds[i],:]
                 try:
                     (model, qf) = fit_single_spa_model(
                         training_data, k, eps,
