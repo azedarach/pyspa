@@ -1,58 +1,11 @@
 import argparse
-
 import numpy as np
+import pickle
+import shelve
 
 from pyspa.spa import EuclideanSPAModel
 
-def read_data(input_file, delimiter=",", verbose=False):
-    data = np.genfromtxt(input_file, names=True, delimiter=delimiter)
-    fields = [f for f in data.dtype.fields]
-
-    if "t" not in fields:
-        raise RuntimeError("no time data found in dataset")
-    t = data["t"]
-
-    if verbose:
-        print("Reading " + str(np.size(t)) + " points")
-
-    n = np.sum(np.array([f.find("xt") for f in fields]) == 0)
-
-    if n == 0:
-        raise RuntimeError("no data found for xt variables in dataset")
-    elif verbose:
-        print("Found number of slow variables n = " + str(n))
-
-    m = int(np.sum(np.array([f.find("yt") for f in fields]) == 0) / n)
-    if m == 0:
-        raise RuntimeError("no data found for yt variables in dataset")
-    elif verbose:
-        print("Found number of fast variables m = " + str(m))
-
-    x = np.vstack([data["xt" + str(i)] for i in range(1, n + 1)])
-    y = np.zeros((n, m, np.size(t)))
-    for i in range(n):
-        for j in range(m):
-            y[i,j,:] = data["yt" + str(i + 1) + str(j+1)]
-
-    return (t, x, y)
-
-def build_dataset(x, y, row_skip=350, verbose=False):
-    T = x.shape[1]
-    n = x.shape[0]
-    m = y.shape[1]
-
-    y_flat = np.reshape(np.moveaxis(y, -1, 0), (T, n * m))
-    data = np.hstack([np.transpose(x), y_flat])
-
-    if verbose:
-        print("Skipping initial " + str(row_skip) + " points")
-
-    return data[row_skip:,:]
-
-def get_initial_affiliations(T, K):
-    gamma = np.random.random((T, K))
-    normalizations = np.sum(gamma, axis=1)
-    return np.divide(gamma, normalizations[:, np.newaxis])
+import lorenz96_utils
 
 def evaluate_approximation_error(model, data, measure="euclidean"):
     validation_model = EuclideanSPAModel(
@@ -79,16 +32,21 @@ def evaluate_approximation_error(model, data, measure="euclidean"):
         raise ValueError("unrecognized error norm")
 
 def fit_single_spa_model(data, n_clusters, regularization,
-                         annealing_steps=5, verbose=False):
+                         annealing_steps=5, stopping_tolerance=1.e-2,
+                         max_iterations=500, use_trial_step=True,
+                         verbose=False):
     statistics_size = data.shape[0]
 
     model = EuclideanSPAModel(data, n_clusters, eps_s_sq=regularization,
-                              verbose=verbose, use_trial_step=True)
+                              verbose=verbose, use_trial_step=use_trial_step,
+                              stopping_tol=stopping_tolerance,
+                              max_iterations=max_iterations)
 
     best_model = None
     best_qf = 9.e99
     for i in range(annealing_steps):
-        gamma0 = get_initial_affiliations(statistics_size, n_clusters)
+        gamma0 = lorenz96_utils.get_random_affiliations(
+            statistics_size, n_clusters)
         model.find_optimal_approx(gamma0)
         if best_model is None:
             best_model = model
@@ -102,7 +60,9 @@ def fit_single_spa_model(data, n_clusters, regularization,
     return (best_model, best_qf)
 
 def fit_spa_model_with_oos(dataset, clusters, regularizations,
-                           annealing_steps, fraction, verbose=False):
+                           annealing_steps, fraction, stopping_tolerance=1.e-2,
+                           max_iterations=500, use_trial_step=True,
+                           verbose=False):
 
     if fraction <= 0. or fraction >= 1.:
         raise ValueError("training fraction must be between 0 and 1")
@@ -119,8 +79,12 @@ def fit_spa_model_with_oos(dataset, clusters, regularizations,
     for k in clusters:
         for eps in regularizations:
             try:
-                (model, qf) = fit_single_spa_model(training_data, k, eps,
-                                                   annealing_steps, verbose)
+                (model, qf) = fit_single_spa_model(
+                    training_data, k, eps,
+                    annealing_steps,
+                    stopping_tolerance=stopping_tolerance,
+                    max_iterations=max_iterations,
+                    use_trial_step=use_trial_step, verbose=verbose)
                 approx_err = evaluate_approximation_error(model,
                                                           validation_data)
             except ValueError:
@@ -132,13 +96,16 @@ def fit_spa_model_with_oos(dataset, clusters, regularizations,
                 qf = np.NaN
                 approx_err = np.NaN
 
-            results[idx] = (k, eps, model, qf, approx_err)
+            results[idx] = {"k": k, "eps": eps, "model": model,
+                            "qf": qf, "avg_approx_err": approx_err}
             idx += 1
 
     return results
 
 def fit_spa_model_with_kfold(dataset, clusters, regularizations,
-                             annealing_steps, n_folds, verbose=False):
+                             annealing_steps, n_folds, stopping_tolerance=1.e-2,
+                             max_iterations=500, use_trial_step=True,
+                             verbose=False):
 
     if n_folds < 2:
         raise ValueError("number of folds must be at least 2")
@@ -167,7 +134,9 @@ def fit_spa_model_with_kfold(dataset, clusters, regularizations,
                 try:
                     (model, qf) = fit_single_spa_model(
                         training_data, k, eps,
-                        annealing_steps, verbose)
+                        annealing_steps, stopping_tolerance=stopping_tolerance,
+                        max_iterations=max_iterations,
+                        use_trial_step=use_trial_step, verbose=verbose)
                     if best_model is None:
                         best_model = model
                         best_qf = qf
@@ -190,21 +159,25 @@ def fit_spa_model_with_kfold(dataset, clusters, regularizations,
                 best_qf = np.NaN
                 avg_approx_error = np.NaN
 
-            results[idx] = (k, eps, best_model, best_qf, avg_approx_err)
+            results[idx] = {"k": k, "eps": eps, "model": best_model,
+                            "qf": best_qf, "avg_approx_err": avg_approx_err}
             idx += 1
 
     return results
 
 def fit_spa_model(dataset, clusters=[2], regularizations=[1e-3],
                   annealing_steps=5, cv_method="oos", fraction=0.75,
-                  verbose=False):
+                  stopping_tolerance=1.e-2,
+                  max_iterations=500, use_trial_step=True, verbose=False):
     statistics_size = dataset.shape[0]
-    if verbose:
-        print("Using dataset of size " + str(statistics_size))
 
     if cv_method == "oos":
         return fit_spa_model_with_oos(dataset, clusters, regularizations,
-                                      annealing_steps, fraction, verbose)
+                                      annealing_steps, fraction,
+                                      stopping_tolerance=stopping_tolerance,
+                                      max_iterations=max_iterations,
+                                      use_trial_step=use_trial_step,
+                                      verbose=verbose)
     elif cv_method == "kfold":
         validation_fraction = 1.0 - fraction
         k = int(np.floor(1.0 / validation_fraction))
@@ -213,23 +186,43 @@ def fit_spa_model(dataset, clusters=[2], regularizations=[1e-3],
                 print("Warning: k-fold CV has fewer than 2 subdivisions")
             k = 2
         return fit_spa_model_with_kfold(dataset, clusters, regularizations,
-                                        annealing_steps, k, verbose)
+                                        annealing_steps, k,
+                                        stopping_tolerance=stopping_tolerance,
+                                        max_iterations=max_iterations,
+                                        use_trial_step=use_trial_step,
+                                        verbose=verbose)
     else:
         raise ValueError("unrecognized cross-validation method")
 
-def write_approximation_errors(fit_results, output_file):
-    lines = []
-    for fit in fit_results:
-        k = fit[0]
-        eps = fit[1]
-        qf = fit[3]
-        err = fit[-1]
-        line = (str(k) + "," + str(eps) + "," + str(qf) + ","
-                + str(err) + "\n")
+def get_file_header():
+    return "# k,eps,L_eps,avg_approx_err"
+
+def write_approximation_errors(fit_results, output_file=""):
+    header = get_file_header()
+    if output_file:
+        header = header + "\n"
+
+    lines = [header]
+    fmt_string="{:d},{:<14.8e},{:<14.8e},{:<14.8e}"
+    for r in fit_results:
+        line = fmt_string.format(
+            r["k"], r["eps"], r["qf"], r["avg_approx_err"])
+        if output_file:
+            line = line + "\n"
         lines.append(line)
 
-    with open(output_file, "w") as ofs:
-        ofs.writelines(lines)
+    if output_file:
+        with open(output_file, "w") as ofs:
+            ofs.writelines(lines)
+    else:
+        for l in lines:
+            print(l)
+
+def write_models(fit_results, models_output_file):
+    with shelve.open(models_output_file,
+                     protocol=pickle.DEFAULT_PROTOCOL) as db:
+        for i, r in enumerate(fit_results):
+            db[str(i)] = r
 
 def parse_cmd_line_args():
     parser = argparse.ArgumentParser(
@@ -257,40 +250,38 @@ def parse_cmd_line_args():
     parser.add_argument("--training-fraction", dest="train_fraction",
                         type=float, default=0.75,
                         help="fraction of data to use as training")
-    parser.add_argument("-v,--verbose", dest="verbose", action="store_true",
-                        help="produce verbose output")
+    parser.add_argument("--discard-fraction", dest="discard_fraction",
+                        type=float, default=0.1,
+                        help="fraction of initial time series to discard")
+    parser.add_argument("--output-file", dest="output_file", default="",
+                        help="name of file to output results to")
+    parser.add_argument("--models-output-file", dest="models_output_file",
+                        default="",
+                        help="name of file to output fitted models to")
 
     return parser.parse_args()
 
 def main():
     args = parse_cmd_line_args()
 
-    if args.verbose:
-        print("Reading data from '" + args.input_file + "'")
-
-    (t, x, y) = read_data(args.input_file, verbose=args.verbose)
-
-    if args.verbose:
-        print("Building initial dataset")
-    dataset = build_dataset(x, y)
-
     regularizations = np.logspace(args.min_log10_eps, args.max_log10_eps,
                                   args.n_regularizations)
-    if args.verbose:
-        print("Trying regularizations: ", regularizations)
 
     clusters = np.arange(args.min_clusters, args.max_clusters + 1)
-    if args.verbose:
-        print("Trying numbers of clusters: ", clusters)
 
-    results = fit_spa_model(dataset, clusters=clusters,
+    (t, x, y) = lorenz96_utils.read_data(args.input_file)
+    data = lorenz96_utils.build_dataset(x, y, args.discard_fraction)
+
+    results = fit_spa_model(data, clusters=clusters,
                             regularizations=regularizations,
                             annealing_steps=args.n_annealing,
                             cv_method=args.cv_method,
-                            fraction=args.train_fraction,
-                            verbose=args.verbose)
+                            fraction=args.train_fraction)
 
-    write_approximation_errors(results, "approx_errors.csv")
+    write_approximation_errors(results, args.output_file)
+
+    if args.models_output_file:
+        write_models(results, args.models_output_file)
 
 if __name__ == "__main__":
     main()
