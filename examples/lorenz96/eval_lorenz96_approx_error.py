@@ -32,7 +32,7 @@ def evaluate_approximation_error(model, data, measure="euclidean"):
         raise ValueError("unrecognized error norm")
 
 def fit_single_spa_model(data, n_clusters, regularization,
-                         annealing_steps=5, stopping_tolerance=1.e-2,
+                         annealing_steps=5, stopping_tolerance=1.e-5,
                          max_iterations=500, use_trial_step=True,
                          verbose=False):
     statistics_size = data.shape[0]
@@ -60,7 +60,7 @@ def fit_single_spa_model(data, n_clusters, regularization,
     return (best_model, best_qf)
 
 def fit_spa_model_with_oos(dataset, clusters, regularizations,
-                           annealing_steps, fraction, stopping_tolerance=1.e-2,
+                           annealing_steps, fraction, stopping_tolerance=1.e-5,
                            max_iterations=500, use_trial_step=True,
                            verbose=False):
 
@@ -103,7 +103,7 @@ def fit_spa_model_with_oos(dataset, clusters, regularizations,
     return results
 
 def fit_spa_model_with_kfold(dataset, clusters, regularizations,
-                             annealing_steps, n_folds, stopping_tolerance=1.e-2,
+                             annealing_steps, n_folds, stopping_tolerance=1.e-5,
                              max_iterations=500, use_trial_step=True,
                              verbose=False):
 
@@ -167,7 +167,7 @@ def fit_spa_model_with_kfold(dataset, clusters, regularizations,
 
 def fit_spa_model(dataset, clusters=[2], regularizations=[1e-3],
                   annealing_steps=5, cv_method="oos", fraction=0.75,
-                  stopping_tolerance=1.e-2,
+                  stopping_tolerance=1.e-5,
                   max_iterations=500, use_trial_step=True, verbose=False):
     statistics_size = dataset.shape[0]
 
