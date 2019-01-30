@@ -1,7 +1,7 @@
 import numpy as np
 
 def spg(f, df, x0, projector=None,
-        tol=1.e-3, max_iterations=3000, m=7, gamma=1e-4,
+        tol=1.e-3, max_iterations=5000, m=7, gamma=1e-4,
         alpha_min=1e-16, alpha_max=1e3,
         sigma_1=0.1, sigma_2=0.9):
 
