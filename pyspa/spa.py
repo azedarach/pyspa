@@ -409,11 +409,8 @@ class SimEuclideanSPAModel(object):
             if gamma_x_sol is None or gamma_y_sol is None:
                 raise RuntimeError("failed to solve Gamma subproblem")
 
-            print("solved row ", i)
-            print("init qf = ", self.eval_quality_function())
             self.x_affiliations[i,:] = np.ravel(gamma_x_sol)
             self.y_affiliations[i,:] = np.ravel(gamma_y_sol)
-            print("final qf = ", self.eval_quality_function())
 
         if self.verbose:
             updated_qf = self.eval_quality_function()
