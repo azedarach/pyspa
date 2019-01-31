@@ -6,10 +6,96 @@ from scipy.optimize import minimize
 from .constraints import simplex_projection
 from .optimizers import solve_qp
 
+def delta_convergence(old_qf, new_qf, abs_tol=1.e-5):
+    if abs_tol <= 0.:
+        raise ValueError("absolute tolerance must be positive")
+    if old_qf is None:
+        return False
+    delta_qf = np.abs(old_qf - new_qf)
+    return delta_qf < abs_tol
+
+def euclidean_spa_states_reg(states):
+    (k, d) = states.shape
+
+    if k == 1:
+        return 0
+
+    reg = (k * np.trace(np.matmul(np.transpose(states), states))
+           - np.sum(np.matmul(states, np.transpose(states))))
+
+    prefactor = 2.0 / (k * d * (k - 1.0))
+
+    return prefactor * reg
+
+def euclidean_spa_dist(dataset, affiliations, states, normalization=1.0):
+    errs = dataset - np.matmul(affiliations, states)
+    return np.linalg.norm(errs) ** 2 / normalization
+
+def exact_euclidean_spa_states(gtx, gtg, eps_s_sq):
+    (k, d) = gtx.shape
+
+    prefactor = 2.0 * eps_s_sq / (k * d)
+    if k > 1:
+        prefactor *= 1.0 / (k - 1.0)
+
+    reg = prefactor * (k * np.identity(k) - np.ones((k, k)))
+
+    H_eps = gtg + reg
+    H_eps_inv = np.linalg.inv(H_eps)
+
+    return np.matmul(H_eps_inv, gtx)
+
+def solve_euclidean_states_subproblem(dataset, affiliations, states, eps_s_sq,
+                                      normalization=1.0,
+                                      use_exact_states=False, solver="spg",
+                                      solution_tol=1.e-5):
+    (k, d) = states.shape
+
+    gtx = (np.matmul(np.transpose(affiliations), dataset) / normalization)
+    gtg = (np.matmul(np.transpose(affiliations), affiliations) / normalization)
+
+    if use_exact_states:
+        return exact_euclidean_spa_states(gtx, gtg, eps_s_sq)
+
+    s_vec_dim = k * d
+    s_guess = np.ravel(states)
+
+    q = -2 * np.reshape(gtx, (s_vec_dim,))
+
+    h1_blocks = [[2 * gtg[i,j] * np.identity(d) for j in range(k)]
+                 for i in range(k)]
+    H1 = np.block(h1_blocks)
+    P = H1
+
+    if k > 1 and eps_s_sq > 0.:
+        H2 = (k * np.identity(s_vec_dim)
+              - np.block([[np.identity(d)
+                           for j in range(k)]
+                          for i in range(k)]))
+        P += 4 * eps_s_sq * H2 / (k * d * (k - 1.0))
+
+    if solver == "spg":
+        s_soln = solve_qp(P, q, x0=s_guess, qpsolver="spg", tol=1.e-5)
+    elif solver in ("BFGS"):
+        f = lambda s : (0.5 * np.matmul(np.transpose(s),
+                                    np.matmul(P, s))
+                        + np.dot(q, s))
+        df = lambda s : np.matmul(P, s) + q
+
+        res = minimize(f, s_guess, method=solver, jac=df, tol=solution_tol)
+        s_soln = res.x
+    else:
+        raise ValueError("unrecognized solver")
+
+    if s_soln is None:
+        raise RuntimeError("failed to solve S subproblem")
+
+    return np.reshape(s_soln, ((k, d)))
+
 def calculate_affiliation_vector(args):
     if args["solver"] == "spgqp":
         return solve_qp(
-            args["P"], args["q"], args["x0"],
+            args["P"], args["q"], x0=args["x0"],
             tol=args["tol"], qpsolver="spgqp",
             projector=simplex_projection)
     elif args["solver"] == "cvxopt":
@@ -21,29 +107,125 @@ def calculate_affiliation_vector(args):
     else:
         raise RuntimeError("unrecognized solver")
 
+def solve_euclidean_gamma_subproblem(dataset, affiliations, states,
+                                     normalization=1.0, use_trial_step=False,
+                                     trial_step_tol=1.e-10, solver="spgqp",
+                                     solution_tol=1.e-5):
+    T = dataset.shape[0]
+
+    q_vecs = (-2 * np.matmul(dataset, np.transpose(states)) / normalization)
+    P = (2 * np.matmul(states, np.transpose(states)) / normalization)
+
+    gamma = np.zeros(affiliations.shape)
+    if use_trial_step:
+        (evals, _) = np.linalg.eig(normalization * P)
+        alpha_try = 1.0 / np.max(np.abs(evals))
+        initial_qf = euclidean_spa_dist(dataset, affiliations, states,
+                                        normalization)
+        grad = normalization * (np.matmul(affiliations, P) + q_vecs)
+        gamma = simplex_projection(affiliations - alpha_try * grad)
+        trial_qf = euclidean_spa_dist(dataset, affiliations, states,
+                                      normalization)
+
+        if np.abs(trial_qf - initial_qf) > trial_step_tol:
+            return gamma
+
+    optim_args = ({"P": P, "q": q_vecs[i,:], "x0": affiliations[i,:],
+                   "tol": solution_tol, "solver": solver}
+                  for i in range(T))
+    with Pool() as pool:
+        res = pool.imap(calculate_affiliation_vector, optim_args)
+        for i in range(T):
+            r = next(res)
+            if r is None:
+                raise RuntimeError("failed to solve Gamma subproblem")
+            else:
+                gamma[i,:] = np.ravel(r)
+
+    return gamma
+
+def run_euclidean_spa(data, n_clusters, eps_s_sq, initial_affiliations,
+                      initial_states=None, normalize=True,
+                      max_iterations=500,
+                      convergence_checker=delta_convergence):
+    if data.ndim != 2:
+        raise ValueError(
+            "the input dataset must be two dimensional")
+
+    if eps_s_sq < 0:
+        raise ValueError(
+            "regularization parameter must be non-negative")
+
+    if clusters < 1:
+        raise ValueError(
+            "the number of clusters must be at least one")
+
+    dataset = data.copy()
+    (T, d) = dataset.shape
+
+    (gamma_T, k) = initial_affiliations.shape
+
+    if gamma_T != T:
+        raise ValueError(
+            "initial affiliations must have same number of rows as input data")
+
+    normalization = 1.0
+    if normalize:
+        normalization *= T * d
+
+    dist = lambda g, s : euclidean_spa_dist(dataset, g, s, normalization)
+
+    if eps_s_sq == 0.:
+        reg = lambda s : 0
+    else:
+        reg = lambda s : eps_s_sq * euclidean_spa_states_reg(s)
+
+    qf = lambda g, s : dist(g, s) + reg(s)
+
+    affiliations = initial_affiliations
+    if initial_states is not None:
+        if initial_states.shape != (k, d):
+            raise ValueError("incorrect shape for initial states")
+        states = initial_states
+    else:
+        states = np.zeros((k, d))
+
+    qf_old = None
+    qf_new = qf(affiliations, states)
+
+    iters = 0
+    is_converged = convergence_checker(qf_old, qf_new)
+    while (not is_converged and iters < max_iterations):
+        qf_old = qf_new
+
+        states = solve_euclidean_states_subproblem(
+            dataset, affiliations, states,
+            eps_s_sq, normalization=normalization)
+
+        affiliations = solve_euclidean_gamma_subproblem(
+            dataset, affiliations, states,
+            normalization=normalization)
+
+        qf_new = qf(affiliations, states)
+        iters += 1
+        is_converged = convergence_checker(qf_old, qf_new)
+
+    if (iters == max_iterations and not is_converged):
+        raise RuntimeError("failed to converge")
+
+    return {"affiliations": affiliations, "states": states,
+            "quality_func": qf_new, "iterations": iters}
+
 class EuclideanSPAModel(object):
-    def __init__(self, dataset, clusters, affiliations=None,
+    def __init__(self, dataset, clusters,
                  eps_s_sq=0, normalize=True,
                  stopping_tol=1.e-5, max_iterations=500,
                  gamma_solver="spgqp",
                  verbose=False, use_exact_states=False,
                  use_trial_step=False):
 
-        if dataset.ndim != 2:
-            raise ValueError(
-                "the input dataset must be two dimensional")
-
-        if eps_s_sq < 0:
-            raise ValueError(
-                "regularization parameter must be non-negative")
-
-        if clusters < 1:
-            raise ValueError(
-                "the number of clusters must be at least one")
-
         self.dataset = dataset.copy()
-        self.statistics_size = self.dataset.shape[0]
-        self.feature_dim = self.dataset.shape[1]
+        (self.statistics_size, self.feature_dim) = self.dataset.shape
 
         self.clusters = clusters
         self.eps_s_sq = eps_s_sq
@@ -66,43 +248,20 @@ class EuclideanSPAModel(object):
         self.use_exact_states = use_exact_states
         self.use_trial_step = use_trial_step
 
-        if affiliations is not None:
-            if affiliations.ndim != 2:
-                raise ValueError(
-                    "the initial affiliations must be two-dimensional")
-            if affiliations.shape[0] != self.statistics_size:
-                raise ValueError(
-                    "affiliations must be provided for all points")
-            if not np.all(affiliations >= 0):
-                raise ValueError(
-                    "affiliations must be non-negative")
-            aff_sums = np.sum(affiliations, axis=1)
-            if not np.allclose(aff_sums, np.ones(self.feature_dim)):
-                raise ValueError(
-                    "affiliations at each time must sum to unity")
-            self.affiliations = affiliations
-        else:
-            self.affiliations = np.random.random(
-                (self.statistics_size, self.clusters))
-            row_sums = np.sum(self.affiliations, axis=1)
-            self.affiliations = np.divide(self.affiliations,
-                                          row_sums[:, np.newaxis])
+        self.affiliations = np.random.random(
+            (self.statistics_size, self.clusters))
+        row_sums = np.sum(self.affiliations, axis=1)
+        self.affiliations = np.divide(self.affiliations,
+                                      row_sums[:, np.newaxis])
 
         self.states = np.zeros((self.clusters, self.feature_dim))
 
     def distance(self):
-        errs = self.dataset - np.matmul(self.affiliations, self.states)
-        return np.linalg.norm(errs) ** 2 / self.normalization
+        return euclidean_spa_dist(self.dataset, self.affiliations,
+                                  self.states, self.normalization)
 
     def states_regularization(self):
-        if self.clusters == 1:
-            return 0
-
-        reg = (self.clusters * np.trace(np.matmul(
-            np.transpose(self.states), self.states))
-               - np.sum(np.matmul(self.states, np.transpose(self.states))))
-
-        return 2 * self.reg_norm * reg
+        return self.eps_s_sq * euclidean_spa_states_reg(self.states)
 
     def eval_quality_function(self):
         return self.distance() + self.states_regularization()
@@ -112,42 +271,9 @@ class EuclideanSPAModel(object):
             initial_qf = self.eval_quality_function()
             print("\tInitial L = " + str(self.eval_quality_function()))
 
-        gtx = (np.matmul(np.transpose(self.affiliations), self.dataset)
-               / self.normalization)
-        gtg = (np.matmul(np.transpose(self.affiliations), self.affiliations)
-               / self.normalization)
-
-        if self.use_exact_states:
-            reg = (2 * self.reg_norm *
-                   (self.clusters * np.identity(self.clusters)
-                    - np.ones((self.clusters, self.clusters))))
-            H_eps = gtg + reg
-            H_eps_inv = np.linalg.inv(H_eps)
-            self.states = np.matmul(H_eps_inv, gtx)
-            return
-
-        s_vec_dim = self.clusters * self.feature_dim
-        s_guess = np.ravel(self.states)
-
-        q = -2 * np.reshape(gtx, (s_vec_dim,))
-
-        h1_blocks = [[2 * gtg[i,j] * np.identity(self.feature_dim)
-                      for j in range(self.clusters)]
-                     for i in range(self.clusters)]
-        H1 = np.block(h1_blocks)
-        P = H1
-        if self.clusters > 1:
-            H2 = (self.clusters * np.identity(s_vec_dim)
-                  - np.block([[np.identity(self.feature_dim)
-                               for j in range(self.clusters)]
-                              for i in range(self.clusters)]))
-            P += 4 * self.reg_norm * H2
-
-        s_soln = solve_qp(P, q, x0=s_guess, qpsolver="spg", tol=1.e-5)
-        if s_soln is None:
-            raise RuntimeError("failed to solve S subproblem")
-
-        self.states = np.reshape(s_soln, ((self.clusters, self.feature_dim)))
+        self.states = solve_euclidean_states_subproblem(
+            self.dataset, self.affiliations, self.states, self.eps_s_sq,
+            self.normalization, self.use_exact_states)
 
         if self.verbose:
             updated_qf = self.eval_quality_function()
@@ -161,37 +287,11 @@ class EuclideanSPAModel(object):
             initial_qf = self.eval_quality_function()
             print("\tInitial L = " + str(self.eval_quality_function()))
 
-        q_vecs = (-2 * np.matmul(self.dataset, np.transpose(self.states))
-                  / self.normalization)
-        P = (2 * np.matmul(self.states, np.transpose(self.states))
-             / self.normalization)
-
-        # try single step
-        if self.use_trial_step:
-            (evals, _) = np.linalg.eig(self.normalization * P)
-            alpha_try = 1.0 / np.max(np.abs(evals))
-            initial_qf = self.eval_quality_function()
-            grad = self.normalization * (np.matmul(self.affiliations, P)
-                                         + q_vecs)
-            self.affiliations = simplex_projection(self.affiliations
-                                                   - alpha_try * grad)
-            trial_qf = self.eval_quality_function()
-
-            if np.abs(trial_qf - initial_qf) > 1.0e-10:
-                return
-
-        # @todo replace with parallel equivalent
-        optim_args = ({"P": P, "q": q_vecs[i,:], "x0": self.affiliations[i,:],
-                       "tol": 1.e-5, "solver": self.gamma_solver}
-                      for i in range(self.statistics_size))
-        with Pool() as pool:
-            res = pool.imap(calculate_affiliation_vector, optim_args)
-            for i in range(self.statistics_size):
-                r = next(res)
-                if r is None:
-                    raise RuntimeError("failed to solve Gamma subproblem")
-                else:
-                    self.affiliations[i,:] = np.ravel(r)
+        self.affiliations = solve_euclidean_gamma_subproblem(
+            self.dataset, self.affiliations, self.states,
+            normalization=self.normalization,
+            use_trial_step=self.use_trial_step,
+            solver=self.gamma_solver)
 
         if self.verbose:
             updated_qf = self.eval_quality_function()
@@ -199,54 +299,6 @@ class EuclideanSPAModel(object):
             if updated_qf > initial_qf:
                 print("\tWARNING: quality function increased")
             print("Successfully solved Gamma subproblem")
-
-    def find_optimal_approx(self, initial_affs, initial_states=None):
-        if initial_affs.shape != self.affiliations.shape:
-            raise ValueError(
-                "initial guess for affiliations has incorrect shape")
-
-        self.affiliations = initial_affs
-
-        if initial_states is not None:
-            if initial_states.shape != self.states.shape:
-                raise ValueError(
-                    "initial guess for states has incorrect shape")
-            self.states = initial_states
-
-        qf_old = None
-        qf_new = self.eval_quality_function()
-        delta_qf = 1e10 + self.stopping_tol
-        iters = 0
-        if self.verbose:
-            print("Iterating with stopping tolerance = "
-                  + str(self.stopping_tol)
-                  + " and max. iterations = " + str(self.max_iterations))
-        while (not self.is_converged(qf_old, qf_new)
-               and iters < self.max_iterations):
-            qf_old = qf_new
-
-            if self.verbose:
-                print("Iteration = " + str(iters))
-                print("Solving S subproblem ...")
-            self.solve_subproblem_s()
-
-            if self.verbose:
-                print("Solving Gamma subproblem ...")
-            self.solve_subproblem_gamma()
-
-            qf_new = self.eval_quality_function()
-
-            if self.verbose:
-                print("Quality function at end of iteration:")
-                print("\tOld L = " + str(qf_old))
-                print("\tNew L = " + str(qf_new))
-
-            iters += 1
-
-        if (iters == self.max_iterations
-            and not self.is_converged(qf_old, qf_new)):
-            raise RuntimeError(
-                "failed to converge")
 
     def is_converged(self, old_qf, new_qf):
         if old_qf is None:
@@ -264,27 +316,29 @@ class EuclideanSPAModel(object):
 
         return delta_qf < self.stopping_tol or r_qf < self.stopping_tol
 
+    def find_optimal_approx(self, initial_affs, initial_states=None):
+        self.affiliations = initial_affs
+
+        if initial_states is not None:
+            self.states = initial_states
+
+        check_convergence = lambda o, n : self.is_converged(o, n)
+
+        result = run_euclidean_spa(self.dataset, self.clusters, self.eps_s_sq,
+                                   self.affiliations,
+                                   initial_states=self.states,
+                                   normalize=self.normalize,
+                                   max_iterations=self.max_iterations,
+                                   convergence_checker=check_convergence)
+
+        self.affiliations = result["affiliations"]
+        self.states = result["states"]
+
 class SimEuclideanSPAModel(object):
     def __init__(self, x_dataset, y_dataset, x_clusters, y_clusters,
                  rel_weight=1.0, stopping_tol=1.e-5, max_iterations=500,
                  gamma_solver="spgqp",
                  verbose=False, use_trial_step=False, use_exact_probs=False):
-
-        if x_dataset.ndim != 2:
-            raise ValueError(
-                "the input X dataset must be two-dimensional")
-
-        if y_dataset.ndim != 2:
-            raise ValueError(
-                "the input Y dataset must be two-dimensional")
-
-        if x_clusters < 1:
-            raise ValueError(
-                "the number of X clusters must be at least one")
-
-        if y_clusters < 1:
-            raise ValueError(
-                "the number of Y clusters must be at least one")
 
         self.x_clusters = x_clusters
         self.y_clusters = y_clusters
@@ -319,76 +373,24 @@ class SimEuclideanSPAModel(object):
         self.y_states = np.zeros((self.y_clusters, self.y_feature_dim))
 
     def distance(self):
-        x_rec = np.matmul(self.x_affiliations, self.x_states)
-        y_rec = np.matmul(self.y_affiliations, self.y_states)
-        return (np.linalg.norm(self.y_dataset - y_rec) ** 2
-                + self.rel_weight ** 2.0 *
-                np.linalg.norm(self.x_dataset - x_rec) ** 2)
+        y_dist = euclidean_spa_dist(self.y_dataset, self.y_affiliations,
+                                   self.y_states)
+        x_dist = euclidean_spa_dist(self.x_dataset, self.x_affiliations,
+                                    self.x_states)
+        return y_dist + self.rel_weight ** 2.0 * x_dist
 
     def eval_quality_function(self):
         return self.distance()
-
-    def solve_subproblem_s_y(self):
-        gyty = np.matmul(np.transpose(self.y_affiliations), self.y_dataset)
-        gytgy = np.matmul(np.transpose(self.y_affiliations),
-                          self.y_affiliations)
-
-        s_y_dim = self.y_clusters * self.y_feature_dim
-        s_y_guess = np.ravel(self.y_states)
-
-        q = -2 * np.reshape(gyty, (s_y_dim,))
-        h1_y_blocks = [[2 * gytgy[i, j] * np.identity(self.y_feature_dim)
-                        for j in range(self.y_clusters)]
-                       for i in range(self.y_clusters)]
-        P = np.block(h1_y_blocks)
-        f = lambda s : (0.5 * np.matmul(np.transpose(s),
-                                        np.matmul(P, s))
-                        + np.dot(q, s))
-        df = lambda s : np.matmul(P, s) + q
-        y_res = minimize(f, s_y_guess, method="BFGS", jac=df)
-        s_y_soln = y_res.x
-        if s_y_soln is None:
-            raise RuntimeError("failed to solve S subproblem for Y states")
-
-        self.y_states = np.reshape(s_y_soln,
-                                   ((self.y_clusters, self.y_feature_dim)))
-
-    def solve_subproblem_s_x(self):
-        gxtx = np.matmul(np.transpose(self.x_affiliations), self.x_dataset)
-        gxtgx = np.matmul(np.transpose(self.x_affiliations),
-                          self.x_affiliations)
-
-        s_x_dim = self.x_clusters * self.x_feature_dim
-        s_x_guess = np.ravel(self.x_states)
-
-        eps_sq = self.rel_weight ** 2.0
-        q = -2 * eps_sq * np.reshape(gxtx, (s_x_dim,))
-
-        h1_x_blocks = [[2 * eps_sq * gxtgx[i, j]
-                        * np.identity(self.x_feature_dim)
-                        for j in range(self.x_clusters)]
-                       for i in range(self.x_clusters)]
-        P = np.block(h1_x_blocks)
-
-        f = lambda s : (0.5 * np.matmul(np.transpose(s),
-                                        np.matmul(P, s))
-                        + np.dot(q, s))
-        df = lambda s : np.matmul(P, s) + q
-        x_res = minimize(f, s_x_guess, method="BFGS", jac=df)
-        s_x_soln = x_res.x
-        if s_x_soln is None:
-            raise RuntimeError("failed to solve S subproblem for X states")
-
-        self.x_states = np.reshape(s_x_soln,
-                                   ((self.x_clusters, self.x_feature_dim)))
 
     def solve_subproblem_s(self):
         if self.verbose:
             initial_qf = self.eval_quality_function()
             print("\tInitial L = " + str(self.eval_quality_function()))
 
-        self.solve_subproblem_s_y()
-        self.solve_subproblem_s_x()
+        self.y_states = solve_euclidean_states_subproblem(
+            self.y_dataset, self.y_affiliations, self.y_states, 0.0)
+        self.x_states = solve_euclidean_states_subproblem(
+            self.x_dataset, self.x_affiliations, self.x_states, 0.0)
 
         if self.verbose:
             updated_qf = self.eval_quality_function()
@@ -397,49 +399,17 @@ class SimEuclideanSPAModel(object):
                 print("\tWARNING: quality function increased")
             print("Successfully solved S subproblem")
 
-    def solve_subproblem_gamma_y(self):
-        q_y_vecs = (-2 * np.matmul(self.y_dataset, np.transpose(self.y_states)))
-        P_y = (2 * np.matmul(self.y_states, np.transpose(self.y_states)))
-
-        optim_args = ({"P": P_y, "q": q_y_vecs[i,:],
-                       "x0": self.y_affiliations[i,:],
-                       "tol": 1.e-5, "solver": self.gamma_solver}
-                      for i in range(self.statistics_size))
-        with Pool() as pool:
-            res = pool.imap(calculate_affiliation_vector, optim_args)
-            for i in range(self.statistics_size):
-                r = next(res)
-                if r is None:
-                    raise RuntimeError("failed to solve Y Gamma subproblem")
-                else:
-                    self.y_affiliations[i,:] = np.ravel(r)
-
-    def solve_subproblem_gamma_x(self):
-        q_x_vecs = (-2 * self.rel_weight ** 2.0 *
-                    np.matmul(self.x_dataset, np.transpose(self.x_states)))
-        P_x = (2 * self.rel_weight ** 2.0 *
-               np.matmul(self.x_states, np.transpose(self.x_states)))
-
-        optim_args = ({"P": P_x, "q": q_x_vecs[i,:],
-                       "x0": self.x_affiliations[i,:],
-                       "tol": 1.e-5, "solver": self.gamma_solver}
-                      for i in range(self.statistics_size))
-        with Pool() as pool:
-            res = pool.imap(calculate_affiliation_vector, optim_args)
-            for i in range(self.statistics_size):
-                r = next(res)
-                if r is None:
-                    raise RuntimeError("failed to solve X Gamma subproblem")
-                else:
-                    self.x_affiliations[i,:] = np.ravel(r)
-
     def solve_subproblem_gamma(self):
         if self.verbose:
             initial_qf = self.eval_quality_function()
             print("\tInitial L = " + str(self.eval_quality_function()))
 
-        self.solve_subproblem_gamma_y()
-        self.solve_subproblem_gamma_x()
+        self.y_affiliations = solve_euclidean_gamma_subproblem(
+            self.y_dataset, self.y_affiliations, self.y_states,
+            solver=self.gamma_solver)
+        self.x_affiliations = solve_euclidean_gamma_subproblem(
+            self.rel_weight * self.x_dataset, self.x_affiliations,
+            self.rel_weight * self.x_states, solver=self.gamma_solver)
 
         if self.verbose:
             updated_qf = self.eval_quality_function()
