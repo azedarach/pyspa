@@ -160,7 +160,7 @@ def run_euclidean_spa(data, n_clusters, eps_s_sq, initial_affiliations,
         raise ValueError(
             "regularization parameter must be non-negative")
 
-    if clusters < 1:
+    if n_clusters < 1:
         raise ValueError(
             "the number of clusters must be at least one")
 
