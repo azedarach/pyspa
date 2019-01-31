@@ -110,7 +110,8 @@ def calculate_affiliation_vector(args):
 def solve_euclidean_gamma_subproblem(dataset, affiliations, states,
                                      normalization=1.0, use_trial_step=False,
                                      trial_step_tol=1.e-10, solver="spgqp",
-                                     solution_tol=1.e-5):
+                                     solution_tol=1.e-5,
+                                     max_processes=8):
     T = dataset.shape[0]
 
     q_vecs = (-2 * np.matmul(dataset, np.transpose(states)) / normalization)
@@ -133,7 +134,7 @@ def solve_euclidean_gamma_subproblem(dataset, affiliations, states,
     optim_args = ({"P": P, "q": q_vecs[i,:], "x0": affiliations[i,:],
                    "tol": solution_tol, "solver": solver}
                   for i in range(T))
-    with Pool() as pool:
+    with Pool(processes=max_processes) as pool:
         res = pool.imap(calculate_affiliation_vector, optim_args)
         for i in range(T):
             r = next(res)
