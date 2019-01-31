@@ -147,7 +147,11 @@ def solve_euclidean_gamma_subproblem(dataset, affiliations, states,
 def run_euclidean_spa(data, n_clusters, eps_s_sq, initial_affiliations,
                       initial_states=None, normalize=True,
                       max_iterations=500,
-                      convergence_checker=delta_convergence):
+                      convergence_checker=delta_convergence,
+                      use_exact_states_solution=False,
+                      states_solver="spg",
+                      use_affiliations_trial_step=False,
+                      affiliations_solver="spgqp"):
     if data.ndim != 2:
         raise ValueError(
             "the input dataset must be two dimensional")
@@ -200,11 +204,15 @@ def run_euclidean_spa(data, n_clusters, eps_s_sq, initial_affiliations,
 
         states = solve_euclidean_states_subproblem(
             dataset, affiliations, states,
-            eps_s_sq, normalization=normalization)
+            eps_s_sq, normalization=normalization,
+            use_exact_states=use_exact_states_solution,
+            solver=states_solver)
 
         affiliations = solve_euclidean_gamma_subproblem(
             dataset, affiliations, states,
-            normalization=normalization)
+            normalization=normalization,
+            use_trial_step=use_affiliations_trial_step,
+            solver=affiliations_solver)
 
         qf_new = qf(affiliations, states)
         iters += 1
@@ -324,12 +332,16 @@ class EuclideanSPAModel(object):
 
         check_convergence = lambda o, n : self.is_converged(o, n)
 
-        result = run_euclidean_spa(self.dataset, self.clusters, self.eps_s_sq,
-                                   self.affiliations,
-                                   initial_states=self.states,
-                                   normalize=self.normalize,
-                                   max_iterations=self.max_iterations,
-                                   convergence_checker=check_convergence)
+        result = run_euclidean_spa(
+            self.dataset, self.clusters, self.eps_s_sq,
+            self.affiliations,
+            initial_states=self.states,
+            normalize=self.normalize,
+            max_iterations=self.max_iterations,
+            convergence_checker=check_convergence,
+            use_exact_states_solution=self.use_exact_states,
+            use_affiliations_trial_step=self.use_trial_step,
+            affiliations_solver=self.gamma_solver)
 
         self.affiliations = result["affiliations"]
         self.states = result["states"]
@@ -388,9 +400,11 @@ class SimEuclideanSPAModel(object):
             print("\tInitial L = " + str(self.eval_quality_function()))
 
         self.y_states = solve_euclidean_states_subproblem(
-            self.y_dataset, self.y_affiliations, self.y_states, 0.0)
+            self.y_dataset, self.y_affiliations, self.y_states, eps_s_sq=0.0,
+            solver="BFGS")
         self.x_states = solve_euclidean_states_subproblem(
-            self.x_dataset, self.x_affiliations, self.x_states, 0.0)
+            self.x_dataset, self.x_affiliations, self.x_states, eps_s_sq=0.0,
+            solver="BFGS")
 
         if self.verbose:
             updated_qf = self.eval_quality_function()
