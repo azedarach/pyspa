@@ -1,8 +1,25 @@
 import numpy as np
+
+from multiprocessing import Pool
 from scipy.optimize import minimize
 
 from .constraints import simplex_projection
 from .optimizers import solve_qp
+
+def calculate_affiliation_vector(args):
+    if args["solver"] == "spgqp":
+        return solve_qp(
+            args["P"], args["q"], args["x0"],
+            tol=args["tol"], qpsolver="spgqp",
+            projector=simplex_projection)
+    elif args["solver"] == "cvxopt":
+        clusters = np.size(args["x0"])
+        return solve_qp(args["P"], args["q"], tol=args["tol"],
+                        qpsolver="cvxopt", A=np.ones((1,clusters)),
+                        b=np.ones((1,1)), G=-np.identity(clusters),
+                        h=np.zeros((clusters,1)))
+    else:
+        raise RuntimeError("unrecognized solver")
 
 class EuclideanSPAModel(object):
     def __init__(self, dataset, clusters, affiliations=None,
@@ -164,24 +181,17 @@ class EuclideanSPAModel(object):
                 return
 
         # @todo replace with parallel equivalent
-        for i in range(self.statistics_size):
-            if self.gamma_solver == "spgqp":
-                gamma_sol = solve_qp(
-                    P, q_vecs[i,:], x0=self.affiliations[i,:], tol=1.e-4,
-                    qpsolver="spgqp", projector=simplex_projection)
-            elif self.gamma_solver == "cvxopt":
-                gamma_sol = solve_qp(
-                    P, q_vecs[i,:], tol=1.e-5,
-                    qpsolver="cvxopt", A=np.ones((1,self.clusters)),
-                    b=np.ones((1,1)), G=-np.identity(self.clusters),
-                    h=np.zeros((self.clusters,1)))
-            else:
-                raise RuntimeError("unrecognized solver for Gamma subproblem")
-
-            if gamma_sol is None:
-                raise RuntimeError("failed to solve Gamma subproblem")
-
-            self.affiliations[i,:] = np.ravel(gamma_sol)
+        optim_args = ({"P": P, "q": q_vecs[i,:], "x0": self.affiliations[i,:],
+                       "tol": 1.e-5, "solver": self.gamma_solver}
+                      for i in range(self.statistics_size))
+        with Pool() as pool:
+            res = pool.imap(calculate_affiliation_vector, optim_args)
+            for i in range(self.statistics_size):
+                r = next(res)
+                if r is None:
+                    raise RuntimeError("failed to solve Gamma subproblem")
+                else:
+                    self.affiliations[i,:] = np.ravel(r)
 
         if self.verbose:
             updated_qf = self.eval_quality_function()
@@ -370,47 +380,49 @@ class SimEuclideanSPAModel(object):
                 print("\tWARNING: quality function increased")
             print("Successfully solved S subproblem")
 
+    def solve_subproblem_gamma_y(self):
+        q_y_vecs = (-2 * np.matmul(self.y_dataset, np.transpose(self.y_states)))
+        P_y = (2 * np.matmul(self.y_states, np.transpose(self.y_states)))
+
+        optim_args = ({"P": P_y, "q": q_y_vecs[i,:],
+                       "x0": self.y_affiliations[i,:],
+                       "tol": 1.e-5, "solver": self.gamma_solver}
+                      for i in range(self.statistics_size))
+        with Pool() as pool:
+            res = pool.imap(calculate_affiliation_vector, optim_args)
+            for i in range(self.statistics_size):
+                r = next(res)
+                if r is None:
+                    raise RuntimeError("failed to solve Y Gamma subproblem")
+                else:
+                    self.y_affiliations[i,:] = np.ravel(r)
+
+    def solve_subproblem_gamma_x(self):
+        q_x_vecs = (-2 * self.rel_weight ** 2.0 *
+                    np.matmul(self.x_dataset, np.transpose(self.x_states)))
+        P_x = (2 * self.rel_weight ** 2.0 *
+               np.matmul(self.x_states, np.transpose(self.x_states)))
+
+        optim_args = ({"P": P_x, "q": q_x_vecs[i,:],
+                       "x0": self.x_affiliations[i,:],
+                       "tol": 1.e-5, "solver": self.gamma_solver}
+                      for i in range(self.statistics_size))
+        with Pool() as pool:
+            res = pool.imap(calculate_affiliation_vector, optim_args)
+            for i in range(self.statistics_size):
+                r = next(res)
+                if r is None:
+                    raise RuntimeError("failed to solve X Gamma subproblem")
+                else:
+                    self.x_affiliations[i,:] = np.ravel(r)
+
     def solve_subproblem_gamma(self):
         if self.verbose:
             initial_qf = self.eval_quality_function()
             print("\tInitial L = " + str(self.eval_quality_function()))
 
-        q_y_vecs = (-2 * np.matmul(self.y_dataset, np.transpose(self.y_states)))
-        q_x_vecs = (-2 * self.rel_weight ** 2.0 *
-                    np.matmul(self.x_dataset, np.transpose(self.x_states)))
-
-        P_y = (2 * np.matmul(self.y_states, np.transpose(self.y_states)))
-        P_x = (2 * self.rel_weight ** 2.0 *
-               np.matmul(self.x_states, np.transpose(self.x_states)))
-
-        tol=1.e-5
-        for i in range(self.statistics_size):
-            if self.gamma_solver == "spgqp":
-                gamma_x_sol = solve_qp(
-                    P_x, q_x_vecs[i,:], x0=self.x_affiliations[i,:], tol=tol,
-                    qpsolver="spgqp", projector=simplex_projection)
-                gamma_y_sol = solve_qp(
-                    P_y, q_y_vecs[i,:], x0=self.y_affiliations[i,:], tol=tol,
-                    qpsolver="spgqp", projector=simplex_projection)
-            elif self.gamma_solver == "cvxopt":
-                gamma_x_sol = solve_qp(
-                    P_x, q_x_vecs[i,:], tol=tol,
-                    qpsolver="cvxopt", A=np.ones((1, self.x_clusters)),
-                    b=np.ones((1,1)), G=-np.identity(self.x_clusters),
-                    h=np.zeros((self.x_clusters,1)))
-                gamma_y_sol = solve_qp(
-                    P_y, q_y_vecs[i,:], tol=tol,
-                    qpsolver="cvxopt", A=np.ones((1, self.y_clusters)),
-                    b=np.ones((1,1)), G=-np.identity(self.y_clusters),
-                    h=np.zeros((self.y_clusters,1)))
-            else:
-                raise RuntimeError("unrecognized solver for Gamma subproblem")
-
-            if gamma_x_sol is None or gamma_y_sol is None:
-                raise RuntimeError("failed to solve Gamma subproblem")
-
-            self.x_affiliations[i,:] = np.ravel(gamma_x_sol)
-            self.y_affiliations[i,:] = np.ravel(gamma_y_sol)
+        self.solve_subproblem_gamma_y()
+        self.solve_subproblem_gamma_x()
 
         if self.verbose:
             updated_qf = self.eval_quality_function()
