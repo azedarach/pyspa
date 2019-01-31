@@ -213,14 +213,18 @@ class EuclideanSPAModel(object):
                     "initial guess for states has incorrect shape")
             self.states = initial_states
 
-        qf_old = self.eval_quality_function()
+        qf_old = None
+        qf_new = self.eval_quality_function()
         delta_qf = 1e10 + self.stopping_tol
         iters = 0
         if self.verbose:
             print("Iterating with stopping tolerance = "
                   + str(self.stopping_tol)
                   + " and max. iterations = " + str(self.max_iterations))
-        while delta_qf > self.stopping_tol and iters < self.max_iterations:
+        while (not self.is_converged(qf_old, qf_new)
+               and iters < self.max_iterations):
+            qf_old = qf_new
+
             if self.verbose:
                 print("Iteration = " + str(iters))
                 print("Solving S subproblem ...")
@@ -231,21 +235,34 @@ class EuclideanSPAModel(object):
             self.solve_subproblem_gamma()
 
             qf_new = self.eval_quality_function()
-            delta_qf = np.abs(qf_old - qf_new)
 
             if self.verbose:
                 print("Quality function at end of iteration:")
                 print("\tOld L = " + str(qf_old))
                 print("\tNew L = " + str(qf_new))
-                print("\tDelta L = " + str(delta_qf))
-
-            qf_old = qf_new
 
             iters += 1
 
-        if iters == self.max_iterations and delta_qf > self.stopping_tol:
+        if (iters == self.max_iterations
+            and not self.is_converged(qf_old, qf_new)):
             raise RuntimeError(
                 "failed to converge")
+
+    def is_converged(self, old_qf, new_qf):
+        if old_qf is None:
+            return False
+        delta_qf = np.abs(old_qf - new_qf)
+
+        if np.abs(old_qf) > np.abs(new_qf):
+            min_qf = new_qf
+            max_qf = old_qf
+        else:
+            min_qf = old_qf
+            max_qf = new_qf
+
+        r_qf = 1.0 - np.abs(min_qf / max_qf)
+
+        return delta_qf < self.stopping_tol or r_qf < self.stopping_tol
 
 class SimEuclideanSPAModel(object):
     def __init__(self, x_dataset, y_dataset, x_clusters, y_clusters,
@@ -456,14 +473,18 @@ class SimEuclideanSPAModel(object):
                     "initial guess for Y states has incorrect shape")
             self.y_states = initial_y_states
 
-        qf_old = self.eval_quality_function()
+        qf_old = None
+        qf_new = self.eval_quality_function()
         delta_qf = 1e10 + self.stopping_tol
         iters = 0
         if self.verbose:
             print("Iterating with stopping tolerance = "
                   + str(self.stopping_tol)
                   + " and max. iterations = " + str(self.max_iterations))
-        while delta_qf > self.stopping_tol and iters < self.max_iterations:
+        while (not self.is_converged(qf_old, qf_new)
+               and iters < self.max_iterations):
+            qf_old = qf_new
+
             if self.verbose:
                 print("Iteration = " + str(iters))
                 print("Solving S subproblem ...")
@@ -472,14 +493,30 @@ class SimEuclideanSPAModel(object):
             if self.verbose:
                 print("Solving Gamma subproblem ...")
             self.solve_subproblem_gamma()
+
             qf_new = self.eval_quality_function()
-            delta_qf = np.abs(qf_old - qf_new)
-            qf_old = qf_new
             iters += 1
 
-        if iters == self.max_iterations and delta_qf > self.stopping_tol:
+        if (iters == self.max_iterations
+            and not self.is_converged(qf_old, qf_new)):
             raise RuntimeError(
                 "failed to converge")
+
+    def is_converged(self, old_qf, new_qf):
+        if old_qf is None:
+            return False
+        delta_qf = np.abs(old_qf - new_qf)
+
+        if np.abs(old_qf) > np.abs(new_qf):
+            min_qf = new_qf
+            max_qf = old_qf
+        else:
+            min_qf = old_qf
+            max_qf = new_qf
+
+        r_qf = 1.0 - np.abs(min_qf / max_qf)
+
+        return delta_qf < self.stopping_tol or r_qf < self.stopping_tol
 
     def get_transition_probabilities(self):
         gxtgy = np.matmul(np.transpose(self.x_affiliations),
