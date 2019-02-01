@@ -52,7 +52,7 @@ def spg(f, df, x0, projector=None,
     iterations = 0
     while not converged and iterations < max_iterations:
         dk = projector(xk - alpha_k * gk) - xk
-        dkgk = np.dot(dk, gk)
+        dkgk = dk.dot(gk)
         lmda = 1
         backtracking = True
         while backtracking:

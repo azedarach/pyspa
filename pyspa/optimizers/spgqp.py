@@ -23,8 +23,8 @@ def spgqp(p, q, x0, projector=None,
         raise ValueError("maximum number of iterations must be at least one")
 
     xk = projector(x0)
-    gk = np.matmul(p, xk) + q
-    fk = 0.5 * np.dot(xk, gk + q)
+    gk = p @ xk + q
+    fk = 0.5 * xk.dot(gk + q)
 
     dinf = projector(xk - gk) - xk
     converged = np.sqrt(np.linalg.norm(dinf)) < tol
@@ -38,10 +38,10 @@ def spgqp(p, q, x0, projector=None,
     iterations = 0
     while not converged and iterations < max_iterations:
         dk = projector(xk - alpha_k * gk) - xk
-        pdk = np.matmul(p, dk)
-        dkdk = np.dot(dk, dk)
-        dkpdk = np.dot(dk, pdk)
-        dkgk = np.dot(dk, gk)
+        pdk = p @ dk
+        dkdk = dk.dot(dk)
+        dkpdk = dk.dot(pdk)
+        dkgk = dk.dot(gk)
 
         converged = np.sqrt(np.linalg.norm(projector(xk - gk) - xk)) < tol
 #        converged = np.sqrt(np.linalg.norm(dk)) < tol
