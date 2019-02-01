@@ -6,10 +6,9 @@ from .spgqp import spgqp
 quadprog_solvers = ["spg", "spgqp"]
 
 def spg_qp(p, q, x0, **kwargs):
-    objective = lambda x : (0.5 * np.matmul(np.transpose(x),
-                                            np.matmul(p, x))
-                            + np.dot(q, x))
-    gradient = lambda x : np.matmul(p, x) + q
+    objective = lambda x : (0.5 * (np.transpose(x) @ (p @ x))
+                            + q.dot(x))
+    gradient = lambda x : p @ x + q
     return spg(objective, gradient, x0, **kwargs)
 
 try:
