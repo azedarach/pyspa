@@ -4,7 +4,7 @@ from multiprocessing import Pool
 from scipy.optimize import minimize
 
 from .constraints import simplex_projection
-from .optimizers import solve_qp
+from .optimizers import spg, solve_qp
 
 def delta_convergence(old_qf, new_qf, abs_tol=1.e-5):
     if abs_tol <= 0.:
@@ -46,7 +46,7 @@ def exact_euclidean_spa_states(gtx, gtg, eps_s_sq):
     return H_eps_inv @ gtx
 
 def build_euclidean_states_f(dataset, affiliations, eps_s_sq,
-                             normalization=1.0):
+                             normalization):
     d = dataset.shape[1]
     k = affiliations.shape[1]
 
@@ -77,6 +77,9 @@ def eval_euclidean_states_f(P, q, states_vec):
     return (0.5 * (np.transpose(states_vec) @ (P @ states_vec))
             + q.dot(states_vec))
 
+def eval_euclidean_states_df(P, q, states_vec):
+    return P @ states_vec + q
+
 def solve_euclidean_states_subproblem(dataset, affiliations, states, eps_s_sq,
                                       normalization=1.0,
                                       use_exact_states=False, solver="BFGS",
@@ -87,15 +90,16 @@ def solve_euclidean_states_subproblem(dataset, affiliations, states, eps_s_sq,
     (P, q) = build_euclidean_states_f(dataset, affiliations, eps_s_sq,
                                       normalization)
 
-    if solver == "spg":
-        s_soln = solve_qp(P, q, x0=s_guess, qpsolver="spg", tol=solution_tol)
-    elif solver in ("BFGS"):
-        f = lambda s : (0.5 * (np.transpose(s) @ (P @ s))
-                        + np.dot(q, s))
-        df = lambda s : P @ s + q
+    f = lambda s : eval_euclidean_states_f(P, q, s)
+    df = lambda s : eval_euclidean_states_df(P, q, s)
 
-        res = minimize(eval_euclidean_states_f, s_guess, method=solver,
-                       jac=eval_euclidean_states_df, tol=solution_tol)
+    if solver == "spg":
+        s_soln = spg(f, df, x0=s_guess, tol=solution_tol)
+    elif solver == "cvxopt":
+        s_soln = solve_qp(P, q, tol=solution_tol, qpsolver="cvxopt")
+    elif solver in ("BFGS"):
+        res = minimize(f, s_guess, method=solver,
+                       jac=df, tol=solution_tol)
         s_soln = res.x
     else:
         raise ValueError("unrecognized solver")
@@ -120,6 +124,13 @@ def calculate_affiliation_vector(args):
     else:
         raise RuntimeError("unrecognized solver")
 
+def euclidean_spa_affiliations_trial_step(P, q, affiliations,
+                                          normalization=1.0):
+    (evals, _) = np.linalg.eig(normalization * P)
+    alpha_try = 1.0 / np.max(np.abs(evals))
+    grad = normalization * (affiliations @ P + q)
+    return simplex_projection(affiliations - alpha_try * grad)
+
 def solve_euclidean_gamma_subproblem(dataset, affiliations, states,
                                      normalization=1.0, use_trial_step=False,
                                      trial_step_tol=1.e-10, solver="spgqp",
@@ -127,24 +138,21 @@ def solve_euclidean_gamma_subproblem(dataset, affiliations, states,
                                      max_processes=8):
     T = dataset.shape[0]
 
-    q_vecs = (-2 * (dataset @ np.transpose(states)) / normalization)
+    q = (-2 * (dataset @ np.transpose(states)) / normalization)
     P = (2 * (states @ np.transpose(states)) / normalization)
 
     gamma = np.zeros(affiliations.shape)
     if use_trial_step:
-        (evals, _) = np.linalg.eig(normalization * P)
-        alpha_try = 1.0 / np.max(np.abs(evals))
         initial_qf = euclidean_spa_dist(dataset, affiliations, states,
                                         normalization)
-        grad = normalization * (affiliations @ P + q_vecs)
-        gamma = simplex_projection(affiliations - alpha_try * grad)
-        trial_qf = euclidean_spa_dist(dataset, gamma, states,
-                                      normalization)
+        gamma = euclidean_spa_affiliations_trial_step(P, q, affiliations,
+                                                      normalization)
+        trial_qf = euclidean_spa_dist(dataset, gamma, states, normalization)
 
         if np.abs(trial_qf - initial_qf) > trial_step_tol:
             return gamma
 
-    optim_args = ({"P": P, "q": q_vecs[i,:], "x0": affiliations[i,:],
+    optim_args = ({"P": P, "q": q[i,:], "x0": affiliations[i,:],
                    "tol": solution_tol, "solver": solver}
                   for i in range(T))
     with Pool(processes=max_processes) as pool:
@@ -163,7 +171,7 @@ def run_euclidean_spa(dataset, n_clusters, eps_s_sq, initial_affiliations,
                       max_iterations=500,
                       convergence_checker=delta_convergence,
                       use_exact_states_solution=False,
-                      states_solver="spg",
+                      states_solver="cvxopt",
                       use_affiliations_trial_step=False,
                       affiliations_solver="spgqp"):
     if dataset.ndim != 2:
