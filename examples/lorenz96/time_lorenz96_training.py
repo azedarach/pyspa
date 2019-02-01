@@ -29,6 +29,7 @@ def time_spa_model(data, clusters=2, regularizations=1.e-3,
                                       stopping_tol=stopping_tolerance,
                                       max_iterations=max_iterations,
                                       use_trial_step=use_trial_step)
+            qfs = []
             timings = []
             for i in range(annealing_steps):
                 gamma0 = lorenz96_utils.get_random_affiliations(
@@ -37,6 +38,7 @@ def time_spa_model(data, clusters=2, regularizations=1.e-3,
                     start_time = time.perf_counter()
                     model.find_optimal_approx(gamma0)
                     end_time = time.perf_counter()
+                    qfs.append(model.eval_quality_function())
                     timings.append(end_time - start_time)
                 except RuntimeError:
                     continue
@@ -47,20 +49,21 @@ def time_spa_model(data, clusters=2, regularizations=1.e-3,
                               "eps": eps,
                               "tol": stopping_tolerance,
                               "max_iters": max_iterations,
+                              "qfs": qfs,
                               "times": timings}
             idx += 1
 
     return run_times
 
 def get_file_header():
-    return "# T,k,eps,tol,max_iters,min_time_sec,mean_time_sec,max_time_sec"
+    return "# T,k,eps,tol,max_iters,min_time_sec,mean_time_sec,max_time_sec,best_qf"
 
 def write_timings(timing_results, output_file=""):
     header = get_file_header()
     if output_file:
         header = header + "\n"
     lines = [header]
-    fmt_string = "{:d},{:d},{:<14.8e},{:14.8e},{:d},{:14.8e},{:14.8e},{:<14.8e}"
+    fmt_string = "{:d},{:d},{:<14.8e},{:14.8e},{:d},{:14.8e},{:14.8e},{:<14.8e},{:<14.8e}"
     for run in timing_results:
         if np.size(run["times"]) > 0:
             min_time = np.min(run["times"])
@@ -68,7 +71,7 @@ def write_timings(timing_results, output_file=""):
             max_time = np.mean(run["times"])
             line = fmt_string.format(
                 run["T"], run["k"], run["eps"], run["tol"], run["max_iters"],
-                min_time, mean_time, max_time)
+                min_time, mean_time, max_time, np.min(run["qfs"]))
             if output_file:
                 line = line + "\n"
             lines.append(line)
