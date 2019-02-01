@@ -20,15 +20,15 @@ def euclidean_spa_states_reg(states):
     if k == 1:
         return 0
 
-    reg = (k * np.trace(np.matmul(np.transpose(states), states))
-           - np.sum(np.matmul(states, np.transpose(states))))
+    reg = (k * np.trace(np.transpose(states) @ states)
+           - np.sum(states @ np.transpose(states)))
 
     prefactor = 2.0 / (k * d * (k - 1.0))
 
     return prefactor * reg
 
 def euclidean_spa_dist(dataset, affiliations, states, normalization=1.0):
-    errs = dataset - np.matmul(affiliations, states)
+    errs = dataset - affiliations @ states
     return np.linalg.norm(errs) ** 2 / normalization
 
 def exact_euclidean_spa_states(gtx, gtg, eps_s_sq):
@@ -43,46 +43,59 @@ def exact_euclidean_spa_states(gtx, gtg, eps_s_sq):
     H_eps = gtg + reg
     H_eps_inv = np.linalg.inv(H_eps)
 
-    return np.matmul(H_eps_inv, gtx)
+    return H_eps_inv @ gtx
 
-def solve_euclidean_states_subproblem(dataset, affiliations, states, eps_s_sq,
-                                      normalization=1.0,
-                                      use_exact_states=False, solver="spg",
-                                      solution_tol=1.e-5):
-    (k, d) = states.shape
+def build_euclidean_states_f(dataset, affiliations, eps_s_sq,
+                             normalization=1.0):
+    d = dataset.shape[1]
+    k = affiliations.shape[1]
 
-    gtx = (np.matmul(np.transpose(affiliations), dataset) / normalization)
-    gtg = (np.matmul(np.transpose(affiliations), affiliations) / normalization)
-
-    if use_exact_states:
-        return exact_euclidean_spa_states(gtx, gtg, eps_s_sq)
+    gtx = ((np.transpose(affiliations) @ dataset) / normalization)
+    gtg = ((np.transpose(affiliations) @ affiliations) / normalization)
 
     s_vec_dim = k * d
-    s_guess = np.ravel(states)
 
     q = -2 * np.reshape(gtx, (s_vec_dim,))
 
-    h1_blocks = [[2 * gtg[i,j] * np.identity(d) for j in range(k)]
-                 for i in range(k)]
-    H1 = np.block(h1_blocks)
-    P = H1
+    reg_prefactor = 0.0
+    if eps_s_sq > 0.0 and k > 1:
+        reg_prefactor = 4.0 * eps_s_sq / (k * d * (k - 1.0))
 
-    if k > 1 and eps_s_sq > 0.:
-        H2 = (k * np.identity(s_vec_dim)
-              - np.block([[np.identity(d)
-                           for j in range(k)]
-                          for i in range(k)]))
-        P += 4 * eps_s_sq * H2 / (k * d * (k - 1.0))
+    P = np.zeros((s_vec_dim, s_vec_dim))
+    for i in range(k):
+        for j in range(k):
+            diag_reg = 0.0
+            if i == j:
+                diag_reg = k
+            for diag in range(d):
+                reg = reg_prefactor * (diag_reg - 1.0)
+                P[i * d + diag, j * d + diag] = 2.0 * gtg[i,j] + reg
+
+    return (P, q)
+
+def eval_euclidean_states_f(P, q, states_vec):
+    return (0.5 * (np.transpose(states_vec) @ (P @ states_vec))
+            + q.dot(states_vec))
+
+def solve_euclidean_states_subproblem(dataset, affiliations, states, eps_s_sq,
+                                      normalization=1.0,
+                                      use_exact_states=False, solver="BFGS",
+                                      solution_tol=1.e-5):
+    (k, d) = states.shape
+
+    s_guess = np.ravel(states)
+    (P, q) = build_euclidean_states_f(dataset, affiliations, eps_s_sq,
+                                      normalization)
 
     if solver == "spg":
-        s_soln = solve_qp(P, q, x0=s_guess, qpsolver="spg", tol=1.e-5)
+        s_soln = solve_qp(P, q, x0=s_guess, qpsolver="spg", tol=solution_tol)
     elif solver in ("BFGS"):
-        f = lambda s : (0.5 * np.matmul(np.transpose(s),
-                                    np.matmul(P, s))
+        f = lambda s : (0.5 * (np.transpose(s) @ (P @ s))
                         + np.dot(q, s))
-        df = lambda s : np.matmul(P, s) + q
+        df = lambda s : P @ s + q
 
-        res = minimize(f, s_guess, method=solver, jac=df, tol=solution_tol)
+        res = minimize(eval_euclidean_states_f, s_guess, method=solver,
+                       jac=eval_euclidean_states_df, tol=solution_tol)
         s_soln = res.x
     else:
         raise ValueError("unrecognized solver")
@@ -114,8 +127,8 @@ def solve_euclidean_gamma_subproblem(dataset, affiliations, states,
                                      max_processes=8):
     T = dataset.shape[0]
 
-    q_vecs = (-2 * np.matmul(dataset, np.transpose(states)) / normalization)
-    P = (2 * np.matmul(states, np.transpose(states)) / normalization)
+    q_vecs = (-2 * (dataset @ np.transpose(states)) / normalization)
+    P = (2 * (states @ np.transpose(states)) / normalization)
 
     gamma = np.zeros(affiliations.shape)
     if use_trial_step:
@@ -123,9 +136,9 @@ def solve_euclidean_gamma_subproblem(dataset, affiliations, states,
         alpha_try = 1.0 / np.max(np.abs(evals))
         initial_qf = euclidean_spa_dist(dataset, affiliations, states,
                                         normalization)
-        grad = normalization * (np.matmul(affiliations, P) + q_vecs)
+        grad = normalization * (affiliations @ P + q_vecs)
         gamma = simplex_projection(affiliations - alpha_try * grad)
-        trial_qf = euclidean_spa_dist(dataset, affiliations, states,
+        trial_qf = euclidean_spa_dist(dataset, gamma, states,
                                       normalization)
 
         if np.abs(trial_qf - initial_qf) > trial_step_tol:
@@ -145,7 +158,7 @@ def solve_euclidean_gamma_subproblem(dataset, affiliations, states,
 
     return gamma
 
-def run_euclidean_spa(data, n_clusters, eps_s_sq, initial_affiliations,
+def run_euclidean_spa(dataset, n_clusters, eps_s_sq, initial_affiliations,
                       initial_states=None, normalize=True,
                       max_iterations=500,
                       convergence_checker=delta_convergence,
@@ -153,7 +166,7 @@ def run_euclidean_spa(data, n_clusters, eps_s_sq, initial_affiliations,
                       states_solver="spg",
                       use_affiliations_trial_step=False,
                       affiliations_solver="spgqp"):
-    if data.ndim != 2:
+    if dataset.ndim != 2:
         raise ValueError(
             "the input dataset must be two dimensional")
 
@@ -165,7 +178,6 @@ def run_euclidean_spa(data, n_clusters, eps_s_sq, initial_affiliations,
         raise ValueError(
             "the number of clusters must be at least one")
 
-    dataset = data.copy()
     (T, d) = dataset.shape
 
     (gamma_T, k) = initial_affiliations.shape
