@@ -562,3 +562,152 @@ class SimEuclideanSPAModel(object):
             raise RuntimeError("unable to solve for transition probabilities")
 
         return np.reshape(lambda_sol, ((self.x_clusters, self.y_clusters)))
+
+class JointEuclideanSPAModel(object):
+    def __init__(self, x_dataset, y_dataset, x_clusters, rel_weight=1.0,
+                 stopping_tol=1.e-5, max_iterations=500, gamma_solver="spgqp",
+                 verbose=False, use_trial_step=False):
+
+        self.x_clusters = x_clusters
+        self.rel_weight = rel_weight
+
+        self.x_dataset = x_dataset.copy()
+        self.y_dataset = y_dataset.copy()
+        self.combined_dataset = np.hstack([self.y_dataset,
+                                           self.rel_weight * self.x_dataset])
+
+        (x_statistics_size, self.x_feature_dim) = self.x_dataset.shape
+        (y_statistics_size, self.y_feature_dim) = self.y_dataset.shape
+
+        if x_statistics_size != y_statistics_size:
+            raise ValueError(
+                "number of points in each dataset must be the same")
+
+        self.statistics_size = x_statistics_size
+
+        self.stopping_tol = stopping_tol
+        self.max_iterations = max_iterations
+        self.gamma_solver = gamma_solver.lower()
+
+        self.verbose = verbose
+        self.use_trial_step = use_trial_step
+
+        self.x_affiliations = np.zeros((self.statistics_size, self.x_clusters))
+
+        self.x_states = np.zeros((self.x_clusters, self.x_feature_dim))
+        self.y_proj = np.zeros((self.x_clusters, self.y_feature_dim))
+        self.combined_states = np.hstack([self.y_proj, self.x_states])
+
+    def distance(self):
+        y_dist = euclidean_spa_dist(self.y_dataset, self.x_affiliations,
+                                    self.y_proj)
+        x_dist = euclidean_spa_dist(self.x_dataset, self.x_affiliations,
+                                    self.x_states)
+        return y_dist + self.rel_weight ** 2.0 * x_dist
+
+    def eval_quality_function(self):
+        return self.distance()
+
+    def solve_subproblem_s(self):
+        if self.verbose:
+            initial_qf = self.eval_quality_function()
+            print("\tInitial L = " + str(self.eval_quality_function()))
+
+        self.combined_states = solve_euclidean_states_subproblem(
+            self.combined_dataset, self.x_affiliations, self.combined_states,
+            eps_s_sq=0.0, solver="BFGS")
+
+        self.y_proj = self.combined_states[:,:self.y_feature_dim]
+        self.x_states = self.combined_states[:,self.y_feature_dim:] / self.rel_weight
+
+        if self.verbose:
+            updated_qf = self.eval_quality_function()
+            print("\tFinal L = " + str(updated_qf))
+            if updated_qf > initial_qf:
+                print("\tWARNING: quality function increased")
+            print("Successfully solved S subproblem")
+
+    def solve_subproblem_gamma(self):
+        if self.verbose:
+            initial_qf = self.eval_quality_function()
+            print("\tInitial L = " + str(self.eval_quality_function()))
+
+        self.x_affiliations = solve_euclidean_gamma_subproblem(
+            self.combined_dataset, self.x_affiliations,
+            self.combined_states, solver=self.gamma_solver,
+            use_trial_step=self.use_trial_step)
+
+        if self.verbose:
+            updated_qf = self.eval_quality_function()
+            print("\tFinal L = " + str(updated_qf))
+            if updated_qf > initial_qf:
+                print("\tWARNING: quality function increased")
+            print("Successfully solved Gamma subproblem")
+
+    def find_optimal_approx(self, initial_affs, initial_x_states=None,
+                            initial_y_proj=None):
+        if initial_affs.shape != self.x_affiliations.shape:
+            raise ValueError(
+                "initial guess for X affiliations has incorrect shape")
+
+        self.x_affiliations = initial_affs
+
+        if initial_x_states is not None:
+            if initial_x_states.shape != self.x_states.shape:
+                raise ValueError(
+                    "initial guess for X states has incorrect shape")
+            self.x_states = initial_x_states
+
+        if initial_y_proj is not None:
+            if initial_y_proj.shape != self.y_proj.shape:
+                raise ValueError(
+                    "initial guess for Y projector has incorrect shape")
+            self.y_proj = initial_y_proj
+
+        self.combined_states = np.hstack([self.y_proj,
+                                          self.rel_weight * self.x_states])
+
+        qf_old = None
+        qf_new = self.eval_quality_function()
+        delta_qf = 1e10 + self.stopping_tol
+        iters = 0
+        if self.verbose:
+            print("Iterating with stopping tolerance = "
+                  + str(self.stopping_tol)
+                  + " and max. iterations = " + str(self.max_iterations))
+        while (not self.is_converged(qf_old, qf_new)
+               and iters < self.max_iterations):
+            qf_old = qf_new
+
+            if self.verbose:
+                print("Iteration = " + str(iters))
+                print("Solving S subproblem ...")
+            self.solve_subproblem_s()
+
+            if self.verbose:
+                print("Solving Gamma subproblem ...")
+            self.solve_subproblem_gamma()
+
+            qf_new = self.eval_quality_function()
+            iters += 1
+
+        if (iters == self.max_iterations
+            and not self.is_converged(qf_old, qf_new)):
+            raise RuntimeError(
+                "failed to converge")
+
+    def is_converged(self, old_qf, new_qf):
+        if old_qf is None:
+            return False
+        delta_qf = np.abs(old_qf - new_qf)
+
+        if np.abs(old_qf) > np.abs(new_qf):
+            min_qf = new_qf
+            max_qf = old_qf
+        else:
+            min_qf = old_qf
+            max_qf = new_qf
+
+        r_qf = 1.0 - np.abs(min_qf / max_qf)
+
+        return delta_qf < self.stopping_tol or r_qf < self.stopping_tol
