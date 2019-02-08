@@ -31,7 +31,11 @@ def euclidean_spa_dist(dataset, affiliations, states, normalization=1.0):
     errs = dataset - affiliations @ states
     return np.linalg.norm(errs) ** 2 / normalization
 
-def exact_euclidean_spa_states(gtx, gtg, eps_s_sq):
+def exact_euclidean_spa_states(dataset, affiliations, eps_s_sq,
+                               normalization):
+    gtx = ((np.transpose(affiliations) @ dataset) / normalization)
+    gtg = ((np.transpose(affiliations) @ affiliations) / normalization)
+
     (k, d) = gtx.shape
 
     prefactor = 2.0 * eps_s_sq / (k * d)
@@ -41,9 +45,10 @@ def exact_euclidean_spa_states(gtx, gtg, eps_s_sq):
     reg = prefactor * (k * np.identity(k) - np.ones((k, k)))
 
     H_eps = gtg + reg
-    H_eps_inv = np.linalg.inv(H_eps)
 
-    return H_eps_inv @ gtx
+    (sol, _, _, _) = np.linalg.lstsq(H_eps, gtx)
+
+    return sol
 
 def build_euclidean_states_f(dataset, affiliations, eps_s_sq,
                              normalization):
@@ -82,11 +87,16 @@ def eval_euclidean_states_df(P, q, states_vec):
 
 def solve_euclidean_states_subproblem(dataset, affiliations, states, eps_s_sq,
                                       normalization=1.0,
-                                      use_exact_states=False, solver="BFGS",
+                                      use_exact_states=True, solver="spg",
                                       solution_tol=1.e-5):
+    if use_exact_states:
+        return exact_euclidean_spa_states(dataset, affiliations, eps_s_sq,
+                                          normalization)
+
     (k, d) = states.shape
 
     s_guess = np.ravel(states)
+
     (P, q) = build_euclidean_states_f(dataset, affiliations, eps_s_sq,
                                       normalization)
 
