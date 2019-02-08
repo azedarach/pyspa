@@ -136,9 +136,9 @@ def calculate_affiliation_vector(args):
 
 def euclidean_spa_affiliations_trial_step(P, q, affiliations,
                                           normalization=1.0):
-    (evals, _) = np.linalg.eig(normalization * P)
+    evals = np.linalg.eigvalsh(P)
     alpha_try = 1.0 / np.max(np.abs(evals))
-    grad = normalization * (affiliations @ P + q)
+    grad = (affiliations @ P + q)
     return simplex_projection(affiliations - alpha_try * grad)
 
 def solve_euclidean_gamma_subproblem(dataset, affiliations, states,
@@ -575,7 +575,7 @@ class SimEuclideanSPAModel(object):
 
 class JointEuclideanSPAModel(object):
     def __init__(self, x_dataset, y_dataset, x_clusters, rel_weight=1.0,
-                 stopping_tol=1.e-5, max_iterations=500, gamma_solver="spgqp",
+                 stopping_tol=1.e-5, max_iterations=500, gamma_solver="cvxopt",
                  verbose=False, use_trial_step=False):
 
         self.x_clusters = x_clusters
