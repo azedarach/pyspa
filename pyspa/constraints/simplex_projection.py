@@ -1,6 +1,6 @@
 import numpy as np
 
-def simplex_projection_presorted(sorted_data):
+def calc_projection_shifts(sorted_data):
     (T, n) = sorted_data.shape
     t_hat = np.zeros(T)
     i = n - 2
@@ -16,7 +16,7 @@ def simplex_projection_presorted(sorted_data):
 
     t_hat[idxs == -1] = (np.sum(sorted_data[idxs == -1, :], axis=1) - 1) / n
 
-    return np.fmax(sorted_data - np.reshape(t_hat, (T, 1)), 0)
+    return t_hat
 
 def simplex_projection(data):
     ndims = data.ndim
@@ -30,7 +30,8 @@ def simplex_projection(data):
     else:
         raise ValueError("input data must be a vector or matrix")
 
-    projections = simplex_projection_presorted(sorted_data)
+    t_hat = calc_projection_shifts(sorted_data)
+    projections = np.fmax(data - np.reshape(t_hat, (T, 1)), 0)
 
     if ndims == 1:
         return np.ravel(projections)
