@@ -1,7 +1,7 @@
 import unittest
 
 import numpy as np
-from pyspa.helpers.persistence import assign_persistent_state_ids
+from pyspa.helpers import assign_persistent_state_ids
 
 class TestPersistenceHelpers(unittest.TestCase):
     def test_assign_persistent_state_ids_no_persistence(self):
