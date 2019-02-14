@@ -7,7 +7,7 @@ def create_kfold_cv_folds(statistics_size, k):
     fold_indices = np.random.permutation(statistics_size)
 
     folds = k * [None]
-    fold_size = int(np.floor(statistics_size / n_folds))
+    fold_size = int(np.floor(statistics_size / k))
     for i in range(k - 1):
         folds[i] = np.sort(fold_indices[i * fold_size : (i + 1) * fold_size])
     folds[k - 1] = np.sort(fold_indices[(k - 1) * fold_size:])
