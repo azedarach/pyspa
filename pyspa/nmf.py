@@ -79,28 +79,24 @@ def nndsvdar(A, k, scale=0.01):
     return (W, H)
 
 def semi_nmf_update_dictionary(X, W, H):
-    wtw = np.linalg.pinv(np.transpose(W) @ W)
+    wtw = np.transpose(W) @ W
     wtx = np.transpose(W) @ X
-    return wtw @ wtx
+    return np.linalg.pinv(wtw) @ wtx
 
-def semi_nmf_update_representation(X, W, H, normalize_rows=False):
+def semi_nmf_update_representation(X, W, H):
     hht = H @ np.transpose(H)
     whhtm = W @ negative_section(hht)
     whhtp = W @ positive_section(hht)
     xht = X @ np.transpose(H)
     xhtp = positive_section(xht)
     xhtm = negative_section(xht)
+    epsilon = 1e-16
+    return W * np.sqrt(np.divide(whhtm + xhtp, whhtp + xhtm + epsilon))
 
-    if not normalize_rows:
-        return W * np.sqrt(np.divide(whhtm + xhtp, whhtp + xhtm))
-    else:
-        new_W = W * np.sqrt(np.divide(whhtm + xhtp, whhtp + xhtm))
-        row_sums = np.sum(new_W, axis=1)
-        return new_W / row_sums[:, np.newaxis]
-
-def semi_nmf(X, n_clusters, W_init=None, delta=0.2, tolerance=1.e-5,
-             max_iterations=1000, normalize_rows=False):
+def semi_nmf(X, n_clusters, W_init=None, delta=0.2, tolerance=1.e-3,
+             max_iterations=1000):
     (n_samples, feature_dim) = X.shape
+
     if W_init is None:
         labels = KMeans(n_clusters=n_clusters).fit(X).labels_
         W_init = np.full((n_samples, n_clusters), delta)
@@ -111,7 +107,8 @@ def semi_nmf(X, n_clusters, W_init=None, delta=0.2, tolerance=1.e-5,
         if W_init.shape != (n_samples, n_clusters):
             raise ValueError("incompatible shape for initial guess for W")
 
-    convergence_check = lambda old_W, new_W : np.max(np.abs(old_W - new_W))
+    convergence_check = lambda old_W, new_W : (np.max(np.abs(old_W - new_W))
+                                               < tolerance)
     is_converged = False
     new_W = W_init
     new_H = np.zeros((n_clusters, feature_dim))
@@ -121,8 +118,7 @@ def semi_nmf(X, n_clusters, W_init=None, delta=0.2, tolerance=1.e-5,
         old_W = new_W
         old_H = new_H
         new_H = semi_nmf_update_dictionary(X, old_W, old_H)
-        new_W = semi_nmf_update_representation(X, old_W, new_H,
-                                               normalize_rows=normalize_rows)
+        new_W = semi_nmf_update_representation(X, old_W, new_H)
         is_converged = convergence_check(old_W, new_W)
         iterations += 1
 
