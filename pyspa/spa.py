@@ -1,4 +1,7 @@
 import numpy as np
+import os
+import pickle
+import time
 
 from multiprocessing import Pool
 from scipy.optimize import minimize
@@ -165,6 +168,7 @@ def solve_euclidean_gamma_subproblem(dataset, affiliations, states,
     optim_args = ({"P": P, "q": q[i,:], "x0": affiliations[i,:],
                    "tol": solution_tol, "solver": solver}
                   for i in range(T))
+
     with Pool(processes=max_processes) as pool:
         res = pool.imap(calculate_affiliation_vector, optim_args)
         for i in range(T):
@@ -176,6 +180,18 @@ def solve_euclidean_gamma_subproblem(dataset, affiliations, states,
 
     return gamma
 
+def create_spa_checkpoint(states, affiliations, checkpoint_file):
+    temp_file = checkpoint_file + ".old"
+    if os.path.exists(checkpoint_file):
+        os.rename(checkpoint_file, temp_file)
+
+    data = {"states": states, "affiliations": affiliations}
+    with open(checkpoint_file, "wb") as cpf:
+        pickle.dump(data, cpf, pickle.HIGHEST_PROTOCOL)
+
+    if os.path.exists(temp_file):
+        os.remove(temp_file)
+
 def run_euclidean_spa(dataset, n_clusters, eps_s_sq, initial_affiliations,
                       initial_states=None, normalize=True,
                       max_iterations=500,
@@ -183,7 +199,9 @@ def run_euclidean_spa(dataset, n_clusters, eps_s_sq, initial_affiliations,
                       use_exact_states_solution=False,
                       states_solver="cvxopt",
                       use_affiliations_trial_step=False,
-                      affiliations_solver="spgqp"):
+                      affiliations_solver="spgqp",
+                      checkpoint_file="",
+                      checkpoint_iterations=30):
     if dataset.ndim != 2:
         raise ValueError(
             "the input dataset must be two dimensional")
@@ -225,31 +243,57 @@ def run_euclidean_spa(dataset, n_clusters, eps_s_sq, initial_affiliations,
     else:
         states = np.zeros((k, d))
 
+    if checkpoint_file:
+        checkpointing = True
+    else:
+        checkpointing = False
+
     qf_old = None
     qf_new = qf(affiliations, states)
-
+    qfs = [qf_new]
+    deltas = []
     iters = 0
     is_converged = convergence_checker(qf_old, qf_new)
+    average_s_time = 0.0
+    average_g_time = 0.0
     while (not is_converged and iters < max_iterations):
         qf_old = qf_new
 
+        s_start_time = time.perf_counter()
         states = solve_euclidean_states_subproblem(
             dataset, affiliations, states,
             eps_s_sq, normalization=normalization,
             use_exact_states=use_exact_states_solution,
             solver=states_solver)
+        s_end_time = time.perf_counter()
 
+        qf_mid = qf(affiliations, states)
+
+        g_start_time = time.perf_counter()
         affiliations = solve_euclidean_gamma_subproblem(
             dataset, affiliations, states,
             normalization=normalization,
             use_trial_step=use_affiliations_trial_step,
             solver=affiliations_solver)
+        g_end_time = time.perf_counter()
 
         qf_new = qf(affiliations, states)
         iters += 1
         is_converged = convergence_checker(qf_old, qf_new)
+        qfs.append(qf_new)
+        deltas.append(qf_old - qf_new)
+
+        average_s_time = ((s_end_time - s_start_time)
+                          + average_s_time * (iters - 1)) / iters
+        average_g_time = ((g_end_time - g_start_time)
+                          + average_g_time * (iters - 1)) / iters
+
+        if checkpointing and iters % checkpoint_iters == 0:
+            create_spa_checkpoint(states, affiliations, checkpoint_file)
 
     if (iters == max_iterations and not is_converged):
+        if checkpointing:
+            create_spa_checkpoint(states, affiliations, checkpoint_file)
         raise RuntimeError("failed to converge")
 
     return {"affiliations": affiliations, "states": states,
@@ -261,7 +305,7 @@ class EuclideanSPAModel(object):
                  stopping_tol=1.e-5, max_iterations=500,
                  gamma_solver="spgqp",
                  verbose=False, use_exact_states=False,
-                 use_trial_step=False):
+                 use_trial_step=False, checkpoint_file=""):
 
         self.dataset = dataset.copy()
         (self.statistics_size, self.feature_dim) = self.dataset.shape
@@ -294,6 +338,13 @@ class EuclideanSPAModel(object):
                                       row_sums[:, np.newaxis])
 
         self.states = np.zeros((self.clusters, self.feature_dim))
+
+        self.checkpoint_file = checkpoint_file
+        self.checkpoint_iterations = 30
+        if checkpoint_file:
+            self.checkpoint = True
+        else:
+            self.checkpoint = False
 
     def distance(self):
         return euclidean_spa_dist(self.dataset, self.affiliations,
@@ -372,7 +423,9 @@ class EuclideanSPAModel(object):
             convergence_checker=check_convergence,
             use_exact_states_solution=self.use_exact_states,
             use_affiliations_trial_step=self.use_trial_step,
-            affiliations_solver=self.gamma_solver)
+            affiliations_solver=self.gamma_solver,
+            checkpoint_file=self.checkpoint_file,
+            checkpoint_iterations=self.checkpoint_iterations)
 
         self.affiliations = result["affiliations"]
         self.states = result["states"]
@@ -380,7 +433,7 @@ class EuclideanSPAModel(object):
 class SimEuclideanSPAModel(object):
     def __init__(self, x_dataset, y_dataset, x_clusters, y_clusters,
                  rel_weight=1.0, stopping_tol=1.e-5, max_iterations=500,
-                 gamma_solver="spgqp",
+                 gamma_solver="cvxopt",
                  verbose=False, use_trial_step=False, use_exact_probs=False):
 
         self.x_clusters = x_clusters
@@ -451,10 +504,11 @@ class SimEuclideanSPAModel(object):
 
         self.y_affiliations = solve_euclidean_gamma_subproblem(
             self.y_dataset, self.y_affiliations, self.y_states,
-            solver=self.gamma_solver)
+            solver=self.gamma_solver, use_trial_step=self.use_trial_step)
         self.x_affiliations = solve_euclidean_gamma_subproblem(
             self.rel_weight * self.x_dataset, self.x_affiliations,
-            self.rel_weight * self.x_states, solver=self.gamma_solver)
+            self.rel_weight * self.x_states, solver=self.gamma_solver,
+            use_trial_step=self.use_trial_step)
 
         if self.verbose:
             updated_qf = self.eval_quality_function()
@@ -576,7 +630,8 @@ class SimEuclideanSPAModel(object):
 class JointEuclideanSPAModel(object):
     def __init__(self, x_dataset, y_dataset, x_clusters, rel_weight=1.0,
                  stopping_tol=1.e-5, max_iterations=500, gamma_solver="cvxopt",
-                 verbose=False, use_trial_step=False):
+                 verbose=False, use_trial_step=False, normalize=True,
+                 checkpoint_file=""):
 
         self.x_clusters = x_clusters
         self.rel_weight = rel_weight
@@ -595,6 +650,13 @@ class JointEuclideanSPAModel(object):
 
         self.statistics_size = x_statistics_size
 
+        self.normalize = normalize
+        if self.normalize:
+            self.normalization = (1.0 * self.statistics_size *
+                                  (self.x_feature_dim + self.y_feature_dim))
+        else:
+            self.normalization = 1.0
+
         self.stopping_tol = stopping_tol
         self.max_iterations = max_iterations
         self.gamma_solver = gamma_solver.lower()
@@ -608,12 +670,19 @@ class JointEuclideanSPAModel(object):
         self.y_proj = np.zeros((self.x_clusters, self.y_feature_dim))
         self.combined_states = np.hstack([self.y_proj, self.x_states])
 
+        self.checkpoint_file = checkpoint_file
+        self.checkpoint_iterations = 30
+        if checkpoint_file:
+            self.checkpoint = True
+        else:
+            self.checkpoint = False
+
     def distance(self):
         y_dist = euclidean_spa_dist(self.y_dataset, self.x_affiliations,
                                     self.y_proj)
         x_dist = euclidean_spa_dist(self.x_dataset, self.x_affiliations,
                                     self.x_states)
-        return y_dist + self.rel_weight ** 2.0 * x_dist
+        return (y_dist + self.rel_weight ** 2.0 * x_dist) / self.normalization
 
     def eval_quality_function(self):
         return self.distance()
@@ -625,7 +694,7 @@ class JointEuclideanSPAModel(object):
 
         self.combined_states = solve_euclidean_states_subproblem(
             self.combined_dataset, self.x_affiliations, self.combined_states,
-            eps_s_sq=0.0, solver="BFGS")
+            eps_s_sq=0.0, solver="BFGS", normalization=self.normalization)
 
         self.y_proj = self.combined_states[:,:self.y_feature_dim]
         self.x_states = self.combined_states[:,self.y_feature_dim:] / self.rel_weight
@@ -645,7 +714,7 @@ class JointEuclideanSPAModel(object):
         self.x_affiliations = solve_euclidean_gamma_subproblem(
             self.combined_dataset, self.x_affiliations,
             self.combined_states, solver=self.gamma_solver,
-            use_trial_step=self.use_trial_step)
+            use_trial_step=self.use_trial_step, normalization=self.normalization)
 
         if self.verbose:
             updated_qf = self.eval_quality_function()
@@ -701,8 +770,12 @@ class JointEuclideanSPAModel(object):
             qf_new = self.eval_quality_function()
             iters += 1
 
+            if self.checkpoint and iters % self.checkpoint_iterations == 0:
+                self.create_checkpoint()
+
         if (iters == self.max_iterations
             and not self.is_converged(qf_old, qf_new)):
+            self.create_checkpoint()
             raise RuntimeError(
                 "failed to converge")
 
@@ -721,3 +794,19 @@ class JointEuclideanSPAModel(object):
         r_qf = 1.0 - np.abs(min_qf / max_qf)
 
         return delta_qf < self.stopping_tol or r_qf < self.stopping_tol
+
+    def create_checkpoint(self):
+        temp_file = self.checkpoint_file + ".old"
+        if os.path.exists(self.checkpoint_file):
+            os.rename(self.checkpoint_file, temp_file)
+
+        if self.verbose:
+            print("Creating checkpoint in '" + self.checkpoint_file + "'")
+
+        data = {"x_states": self.x_states, "y_proj": self.y_proj,
+                "x_affiliations": self.x_affiliations}
+        with open(self.checkpoint_file, "wb") as cpf:
+            pickle.dump(data, cpf, pickle.HIGHEST_PROTOCOL)
+
+        if os.path.exists(temp_file):
+            os.remove(temp_file)
