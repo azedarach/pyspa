@@ -4,8 +4,10 @@ import numpy as np
 
 from pyspa.spa import EuclideanSPAModel
 
+
 def generate_random_dataset(feature_dim, statistics_size):
     return np.random.random((statistics_size, feature_dim))
+
 
 def get_unregularized_states(dataset, affiliations, normalize=True):
     normalization = 1.0
@@ -20,6 +22,7 @@ def get_unregularized_states(dataset, affiliations, normalize=True):
 
     return np.matmul(gtgpinv, gtx)
 
+
 def get_regularized_states(dataset, affiliations, eps_s_sq, normalize=True):
     k = affiliations.shape[1]
     d = dataset.shape[1]
@@ -30,12 +33,13 @@ def get_regularized_states(dataset, affiliations, eps_s_sq, normalize=True):
     if k == 1:
         return get_unregularized_states(dataset, affiliations)
     gtg = np.matmul(np.transpose(affiliations), affiliations) / normalization
-    reg = (2 * eps_s_sq * (k * np.identity(k) - np.ones((k,k)))
-           / (d * k * (k - 1.0)))
+    reg = (2 * eps_s_sq * (k * np.identity(k) - np.ones((k, k))) /
+           (d * k * (k - 1.0)))
     H_eps = gtg + reg
     H_eps_inv = np.linalg.inv(H_eps)
     gtx = np.matmul(np.transpose(affiliations), dataset) / normalization
     return np.matmul(H_eps_inv, gtx)
+
 
 def get_two_cluster_affiliations(x, states):
     d = x.shape[1]
@@ -43,12 +47,13 @@ def get_two_cluster_affiliations(x, states):
         raise ValueError("exact expression only holds for K = 2 clusters")
     if states.shape[1] != d:
         raise ValueError("dimension of states must match dimension of data")
-    diff = states[0,:] - states[1,:]
+    diff = states[0, :] - states[1, :]
     denom = np.dot(diff, diff)
-    alpha_1 = np.dot(x - states[1,:], diff) / denom
-    alpha_2 = -np.dot(x - states[0,:], diff) / denom
-    return np.fmax(0, np.hstack([np.fmin(1, alpha_1[:,np.newaxis]),
-                                 np.fmin(1, alpha_2[:,np.newaxis])]))
+    alpha_1 = np.dot(x - states[1, :], diff) / denom
+    alpha_2 = -np.dot(x - states[0, :], diff) / denom
+    return np.fmax(0, np.hstack([np.fmin(1, alpha_1[:, np.newaxis]),
+                                 np.fmin(1, alpha_2[:, np.newaxis])]))
+
 
 class TestEuclideanSPAModel(unittest.TestCase):
 
@@ -100,11 +105,10 @@ class TestEuclideanSPAModel(unittest.TestCase):
             model.solve_subproblem_gamma()
             output_aff = model.affiliations
             exact_aff = get_two_cluster_affiliations(dataset, model.states)
-            output_qf =  model.eval_quality_function()
             model.affiliations = exact_aff
-            exact_qf =  model.eval_quality_function()
             self.assertTrue(np.allclose(output_aff, exact_aff,
                                         rtol=1.e-5, atol=1.e-5))
+
 
 if __name__ == "__main__":
     unittest.main()

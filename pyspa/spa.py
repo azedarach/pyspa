@@ -9,6 +9,7 @@ from scipy.optimize import minimize
 from .constraints import simplex_projection
 from .optimizers import spg, solve_qp
 
+
 def delta_convergence(old_qf, new_qf, abs_tol=1.e-5):
     if abs_tol <= 0.:
         raise ValueError("absolute tolerance must be positive")
@@ -17,22 +18,25 @@ def delta_convergence(old_qf, new_qf, abs_tol=1.e-5):
     delta_qf = np.abs(old_qf - new_qf)
     return delta_qf < abs_tol
 
+
 def euclidean_spa_states_reg(states):
     (k, d) = states.shape
 
     if k == 1:
         return 0
 
-    reg = (k * np.trace(np.transpose(states) @ states)
-           - np.sum(states @ np.transpose(states)))
+    reg = (k * np.trace(np.transpose(states) @ states) -
+           np.sum(states @ np.transpose(states)))
 
     prefactor = 2.0 / (k * d * (k - 1.0))
 
     return prefactor * reg
 
+
 def euclidean_spa_dist(dataset, affiliations, states, normalization=1.0):
     errs = dataset - affiliations @ states
     return np.linalg.norm(errs) ** 2 / normalization
+
 
 def exact_euclidean_spa_states(dataset, affiliations, eps_s_sq,
                                normalization):
@@ -52,6 +56,7 @@ def exact_euclidean_spa_states(dataset, affiliations, eps_s_sq,
     (sol, _, _, _) = np.linalg.lstsq(H_eps, gtx)
 
     return sol
+
 
 def build_euclidean_states_f(dataset, affiliations, eps_s_sq,
                              normalization):
@@ -77,16 +82,19 @@ def build_euclidean_states_f(dataset, affiliations, eps_s_sq,
                 diag_reg = k
             for diag in range(d):
                 reg = reg_prefactor * (diag_reg - 1.0)
-                P[i * d + diag, j * d + diag] = 2.0 * gtg[i,j] + reg
+                P[i * d + diag, j * d + diag] = 2.0 * gtg[i, j] + reg
 
     return (P, q)
 
+
 def eval_euclidean_states_f(P, q, states_vec):
-    return (0.5 * (np.transpose(states_vec) @ (P @ states_vec))
-            + q.dot(states_vec))
+    return (0.5 * (np.transpose(states_vec) @ (P @ states_vec)) +
+            q.dot(states_vec))
+
 
 def eval_euclidean_states_df(P, q, states_vec):
     return P @ states_vec + q
+
 
 def solve_euclidean_states_subproblem(dataset, affiliations, states, eps_s_sq,
                                       normalization=1.0,
@@ -122,6 +130,7 @@ def solve_euclidean_states_subproblem(dataset, affiliations, states, eps_s_sq,
 
     return np.reshape(s_soln, ((k, d)))
 
+
 def calculate_affiliation_vector(args):
     if args["solver"] == "spgqp":
         return solve_qp(
@@ -131,11 +140,12 @@ def calculate_affiliation_vector(args):
     elif args["solver"] == "cvxopt":
         clusters = np.size(args["x0"])
         return solve_qp(args["P"], args["q"], tol=args["tol"],
-                        qpsolver="cvxopt", A=np.ones((1,clusters)),
-                        b=np.ones((1,1)), G=-np.identity(clusters),
-                        h=np.zeros((clusters,1)))
+                        qpsolver="cvxopt", A=np.ones((1, clusters)),
+                        b=np.ones((1, 1)), G=-np.identity(clusters),
+                        h=np.zeros((clusters, 1)))
     else:
         raise RuntimeError("unrecognized solver")
+
 
 def euclidean_spa_affiliations_trial_step(P, q, affiliations,
                                           normalization=1.0):
@@ -143,6 +153,7 @@ def euclidean_spa_affiliations_trial_step(P, q, affiliations,
     alpha_try = 1.0 / np.max(np.abs(evals))
     grad = (affiliations @ P + q)
     return simplex_projection(affiliations - alpha_try * grad)
+
 
 def solve_euclidean_gamma_subproblem(dataset, affiliations, states,
                                      normalization=1.0, use_trial_step=False,
@@ -165,7 +176,7 @@ def solve_euclidean_gamma_subproblem(dataset, affiliations, states,
         if np.abs(trial_qf - initial_qf) > trial_step_tol:
             return gamma
 
-    optim_args = ({"P": P, "q": q[i,:], "x0": affiliations[i,:],
+    optim_args = ({"P": P, "q": q[i, :], "x0": affiliations[i, :],
                    "tol": solution_tol, "solver": solver}
                   for i in range(T))
 
@@ -176,9 +187,10 @@ def solve_euclidean_gamma_subproblem(dataset, affiliations, states,
             if r is None:
                 raise RuntimeError("failed to solve Gamma subproblem")
             else:
-                gamma[i,:] = np.ravel(r)
+                gamma[i, :] = np.ravel(r)
 
     return gamma
+
 
 def create_spa_checkpoint(states, affiliations, checkpoint_file):
     temp_file = checkpoint_file + ".old"
@@ -191,6 +203,7 @@ def create_spa_checkpoint(states, affiliations, checkpoint_file):
 
     if os.path.exists(temp_file):
         os.remove(temp_file)
+
 
 def run_euclidean_spa(dataset, n_clusters, eps_s_sq, initial_affiliations,
                       initial_states=None, normalize=True,
@@ -267,8 +280,6 @@ def run_euclidean_spa(dataset, n_clusters, eps_s_sq, initial_affiliations,
             solver=states_solver)
         s_end_time = time.perf_counter()
 
-        qf_mid = qf(affiliations, states)
-
         g_start_time = time.perf_counter()
         affiliations = solve_euclidean_gamma_subproblem(
             dataset, affiliations, states,
@@ -283,12 +294,12 @@ def run_euclidean_spa(dataset, n_clusters, eps_s_sq, initial_affiliations,
         qfs.append(qf_new)
         deltas.append(qf_old - qf_new)
 
-        average_s_time = ((s_end_time - s_start_time)
-                          + average_s_time * (iters - 1)) / iters
-        average_g_time = ((g_end_time - g_start_time)
-                          + average_g_time * (iters - 1)) / iters
+        average_s_time = ((s_end_time - s_start_time) +
+                          average_s_time * (iters - 1)) / iters
+        average_g_time = ((g_end_time - g_start_time) +
+                          average_g_time * (iters - 1)) / iters
 
-        if checkpointing and iters % checkpoint_iters == 0:
+        if checkpointing and iters % checkpoint_iterations == 0:
             create_spa_checkpoint(states, affiliations, checkpoint_file)
 
     if (iters == max_iterations and not is_converged):
@@ -298,6 +309,7 @@ def run_euclidean_spa(dataset, n_clusters, eps_s_sq, initial_affiliations,
 
     return {"affiliations": affiliations, "states": states,
             "quality_func": qf_new, "iterations": iters}
+
 
 class EuclideanSPAModel(object):
     def __init__(self, dataset, clusters,
@@ -430,6 +442,7 @@ class EuclideanSPAModel(object):
         self.affiliations = result["affiliations"]
         self.states = result["states"]
 
+
 class SimEuclideanSPAModel(object):
     def __init__(self, x_dataset, y_dataset, x_clusters, y_clusters,
                  rel_weight=1.0, stopping_tol=1.e-5, max_iterations=500,
@@ -470,7 +483,7 @@ class SimEuclideanSPAModel(object):
 
     def distance(self):
         y_dist = euclidean_spa_dist(self.y_dataset, self.y_affiliations,
-                                   self.y_states)
+                                    self.y_states)
         x_dist = euclidean_spa_dist(self.x_dataset, self.x_affiliations,
                                     self.x_states)
         return y_dist + self.rel_weight ** 2.0 * x_dist
@@ -544,14 +557,13 @@ class SimEuclideanSPAModel(object):
 
         qf_old = None
         qf_new = self.eval_quality_function()
-        delta_qf = 1e10 + self.stopping_tol
         iters = 0
         if self.verbose:
-            print("Iterating with stopping tolerance = "
-                  + str(self.stopping_tol)
-                  + " and max. iterations = " + str(self.max_iterations))
-        while (not self.is_converged(qf_old, qf_new)
-               and iters < self.max_iterations):
+            print("Iterating with stopping tolerance = " +
+                  str(self.stopping_tol) +
+                  " and max. iterations = " + str(self.max_iterations))
+        while (not self.is_converged(qf_old, qf_new) and
+               iters < self.max_iterations):
             qf_old = qf_new
 
             if self.verbose:
@@ -566,8 +578,8 @@ class SimEuclideanSPAModel(object):
             qf_new = self.eval_quality_function()
             iters += 1
 
-        if (iters == self.max_iterations
-            and not self.is_converged(qf_old, qf_new)):
+        if (iters == self.max_iterations and
+            not self.is_converged(qf_old, qf_new)):
             raise RuntimeError(
                 "failed to converge")
 
@@ -600,7 +612,7 @@ class SimEuclideanSPAModel(object):
         lambda_guess = np.ravel(gxtgy)
 
         q = -2 * np.reshape(gxtgy, (lambda_vec_dim,))
-        p_blocks = [[2 * gxtgx[i,j] * np.identity(self.y_clusters)
+        p_blocks = [[2 * gxtgx[i, j] * np.identity(self.y_clusters)
                      for j in range(self.x_clusters)]
                     for i in range(self.x_clusters)]
         P = np.block(p_blocks)
@@ -612,13 +624,14 @@ class SimEuclideanSPAModel(object):
         elif self.gamma_solver == "cvxopt":
             A = np.zeros((self.x_clusters, lambda_vec_dim))
             for i in range(self.x_clusters):
-                A[i,i * self.y_clusters:(i+1)*self.y_clusters] = np.ones(
+                A[i, i * self.y_clusters:(i + 1) * self.y_clusters] = np.ones(
                     (1, self.y_clusters))
             lambda_sol = solve_qp(
                 P, q, tol=1.e-5,
                 qpsolver="cvxopt", A=A,
-                b=np.ones((self.x_clusters,1)), G=-np.identity(lambda_vec_dim),
-                h=np.zeros((lambda_vec_dim,1)))
+                b=np.ones((self.x_clusters, 1)),
+                G=-np.identity(lambda_vec_dim),
+                h=np.zeros((lambda_vec_dim, 1)))
         else:
             raise RuntimeError("unrecognized solver for Gamma subproblem")
 
@@ -626,6 +639,7 @@ class SimEuclideanSPAModel(object):
             raise RuntimeError("unable to solve for transition probabilities")
 
         return np.reshape(lambda_sol, ((self.x_clusters, self.y_clusters)))
+
 
 class JointEuclideanSPAModel(object):
     def __init__(self, x_dataset, y_dataset, x_clusters, rel_weight=1.0,
@@ -696,8 +710,9 @@ class JointEuclideanSPAModel(object):
             self.combined_dataset, self.x_affiliations, self.combined_states,
             eps_s_sq=0.0, solver="BFGS", normalization=self.normalization)
 
-        self.y_proj = self.combined_states[:,:self.y_feature_dim]
-        self.x_states = self.combined_states[:,self.y_feature_dim:] / self.rel_weight
+        self.y_proj = self.combined_states[:, :self.y_feature_dim]
+        self.x_states = (self.combined_states[:, self.y_feature_dim:] /
+                         self.rel_weight)
 
         if self.verbose:
             updated_qf = self.eval_quality_function()
@@ -714,7 +729,8 @@ class JointEuclideanSPAModel(object):
         self.x_affiliations = solve_euclidean_gamma_subproblem(
             self.combined_dataset, self.x_affiliations,
             self.combined_states, solver=self.gamma_solver,
-            use_trial_step=self.use_trial_step, normalization=self.normalization)
+            use_trial_step=self.use_trial_step,
+            normalization=self.normalization)
 
         if self.verbose:
             updated_qf = self.eval_quality_function()
@@ -748,14 +764,13 @@ class JointEuclideanSPAModel(object):
 
         qf_old = None
         qf_new = self.eval_quality_function()
-        delta_qf = 1e10 + self.stopping_tol
         iters = 0
         if self.verbose:
-            print("Iterating with stopping tolerance = "
-                  + str(self.stopping_tol)
-                  + " and max. iterations = " + str(self.max_iterations))
-        while (not self.is_converged(qf_old, qf_new)
-               and iters < self.max_iterations):
+            print("Iterating with stopping tolerance = " +
+                  str(self.stopping_tol) +
+                  " and max. iterations = " + str(self.max_iterations))
+        while (not self.is_converged(qf_old, qf_new) and
+               iters < self.max_iterations):
             qf_old = qf_new
 
             if self.verbose:
@@ -773,8 +788,8 @@ class JointEuclideanSPAModel(object):
             if self.checkpoint and iters % self.checkpoint_iterations == 0:
                 self.create_checkpoint()
 
-        if (iters == self.max_iterations
-            and not self.is_converged(qf_old, qf_new)):
+        if (iters == self.max_iterations and
+            not self.is_converged(qf_old, qf_new)):
             self.create_checkpoint()
             raise RuntimeError(
                 "failed to converge")
