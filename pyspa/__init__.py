@@ -1,4 +1,4 @@
-from . import spa
-from . import nmf
+from .spa import EuclideanSPA, euclidean_spa
 
-__all__ = ["spa", "nmf"]
+
+__all__ = ["EuclideanSPA", "euclidean_spa"]
