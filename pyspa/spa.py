@@ -795,187 +795,252 @@ class EuclideanSPA(object):
         return np.dot(Gamma, self.components_)
 
 
-class JointEuclideanSPAModel(object):
-    def __init__(self, x_dataset, y_dataset, x_clusters, rel_weight=1.0,
-                 stopping_tol=1.e-5, max_iterations=500, gamma_solver="cvxopt",
-                 verbose=False, use_trial_step=False, normalize=True,
-                 checkpoint_file=""):
+class JointEuclideanSPA(object):
+    r"""Joint SPA discretization with Euclidean cost function.
 
-        self.x_clusters = x_clusters
-        self.rel_weight = rel_weight
+    Convenience class for performing joint discretization of
+    two datasets by constructing a merged dataset. As for a
+    single dataset, the objective function is::
 
-        self.x_dataset = x_dataset.copy()
-        self.y_dataset = y_dataset.copy()
-        self.combined_dataset = np.hstack([self.y_dataset,
-                                           self.rel_weight * self.x_dataset])
+        ||X_\epsilon - Gamma_x S_\epsilon||_Fro^2 /
+        (n_samples * n_total_features)
+        + epsilon_states * \Phi_S(S_\epsilon)
 
-        (x_statistics_size, self.x_feature_dim) = self.x_dataset.shape
-        (y_statistics_size, self.y_feature_dim) = self.y_dataset.shape
+    where the augmented data matrix X_\epsilon is constructed
+    from the given data matrices X and Y as X_\epsilon = [Y, epsilon_weight X]
+    and has shape (n_samples, n_total_features), with
+    n_total_features = n_y_features + n_x_features, and::
 
-        if x_statistics_size != y_statistics_size:
-            raise ValueError(
-                "number of points in each dataset must be the same")
+        \Phi_S(S) = \sum_{i, j = 1}^{n_components} ||s_i - s_j||_2^2
+                    / (n_features * n_components * (n_components - 1))
 
-        self.statistics_size = x_statistics_size
+    where S_\epsilon is the augmented dictionary. The objective function is
+    minimized with an alternating minimization with respect to S and Gamma.
 
-        self.normalize = normalize
-        if self.normalize:
-            self.normalization = (1.0 * self.statistics_size *
-                                  (self.x_feature_dim + self.y_feature_dim))
-        else:
-            self.normalization = 1.0
+    Parameters
+    ----------
+    n_components : integer or None
+        If an integer, the number of components. If None, then all
+        features are kept.
 
-        self.stopping_tol = stopping_tol
-        self.max_iterations = max_iterations
-        self.gamma_solver = gamma_solver.lower()
+    init : None | 'random' | 'custom'
+        Method used to initialize the algorithm.
+        Default: None
+        Valid options:
 
+        - None: falls back to 'random'
+
+        - 'random': random matrix of states scaled by
+            sqrt(X.mean() / n_components), and a random
+            stochastic matrix of affiliations.
+
+        - 'custom': use custom matrices for Gamma and S
+
+    solver : 'subspace'
+        Numerical solver to use:
+        'subspace' is the subspace algorithm.
+
+    tol : float, default: 1e-4
+        Tolerance of the stopping condition.
+
+    max_iter : integer, default: 200
+        Maximum number of iterations before stopping.
+
+    random_state : integer, RandomState, or None
+        If an integer, random_state is the seed used by the
+        random number generator. If a RandomState instance,
+        random_state is the random number generator. If
+        None, the random number generator is the
+        RandomState instance used by `np.random`.
+
+    epsilon_states : float, default: 0
+        Regularization parameter for states.
+
+    epsilon_weight : float, default: 1
+        Regularization parameter controlling the weight assigned
+        to each discretization.
+
+    verbose : integer, default: 0
+        The verbosity level.
+
+    Attributes
+    ----------
+    components_ : array-like, shape (n_components, n_features)
+        The dictionary of states or atoms.
+
+    reconstruction_err_ : number
+        Frobenius norm of the matrix difference between the
+        training data ``X_\epsilon`` and the reconstructed data
+        ``Gamma S_\epsilon`` from the SPA algorithm.
+
+    n_iter_ : integer
+        Actual number of iterations.
+
+    Examples
+    --------
+    import numpy as np
+    X = np.random.rand(10, 4)
+    Y = np.random.rand(10, 3)
+    from pyspa.spa import EuclideanSPA
+    model = EuclideanSPA(n_components=2, init='random', random_state=0)
+    Gamma = model.fit_transform(X, Y)
+    S = model.components_
+
+    References
+    ----------
+    S. Gerber, L. Pospisil, M. Navandar, and I. Horenko,
+    "Low-cost scalable discretization, prediction and feature selection
+    for complex systems" (2018)
+    """
+
+    def __init__(self, n_components, init=None, solver='subspace',
+                 tol=1e-4, max_iter=200, random_state=None,
+                 epsilon_states=0, epsilon_weight=1, verbose=0):
+        self.n_components = n_components
+        self.init = init
+        self.solver = solver
+        self.tol = tol
+        self.max_iter = max_iter
+        self.random_state = random_state
+        self.epsilon_states = epsilon_states
+        self.epsilon_weight = epsilon_weight
         self.verbose = verbose
-        self.use_trial_step = use_trial_step
 
-        self.x_affiliations = np.zeros((self.statistics_size, self.x_clusters))
+    def _merge_datasets(self, X, Y):
+        """Merge two datasets for performing joint discretization.
 
-        self.x_states = np.zeros((self.x_clusters, self.x_feature_dim))
-        self.y_proj = np.zeros((self.x_clusters, self.y_feature_dim))
-        self.combined_states = np.hstack([self.y_proj, self.x_states])
+        Parameters
+        ----------
+        X : array-like, shape (n_samples, n_x_features)
+            First data matrix to be discretized.
 
-        self.checkpoint_file = checkpoint_file
-        self.checkpoint_iterations = 30
-        if checkpoint_file:
-            self.checkpoint = True
-        else:
-            self.checkpoint = False
+        Y : array-like, shape (n_samples, n_y_features)
+            Second data matrix to be discretized.
 
-    def distance(self):
-        y_dist = euclidean_spa_dist(self.y_dataset, self.x_affiliations,
-                                    self.y_proj)
-        x_dist = euclidean_spa_dist(self.x_dataset, self.x_affiliations,
-                                    self.x_states)
-        return (y_dist + self.rel_weight ** 2.0 * x_dist) / self.normalization
-
-    def eval_quality_function(self):
-        return self.distance()
-
-    def solve_subproblem_s(self):
-        if self.verbose:
-            initial_qf = self.eval_quality_function()
-            print("\tInitial L = " + str(self.eval_quality_function()))
-
-        self.combined_states = solve_euclidean_states_subproblem(
-            self.combined_dataset, self.x_affiliations, self.combined_states,
-            eps_s_sq=0.0, solver="BFGS", normalization=self.normalization)
-
-        self.y_proj = self.combined_states[:, :self.y_feature_dim]
-        self.x_states = (self.combined_states[:, self.y_feature_dim:] /
-                         self.rel_weight)
-
-        if self.verbose:
-            updated_qf = self.eval_quality_function()
-            print("\tFinal L = " + str(updated_qf))
-            if updated_qf > initial_qf:
-                print("\tWARNING: quality function increased")
-            print("Successfully solved S subproblem")
-
-    def solve_subproblem_gamma(self):
-        if self.verbose:
-            initial_qf = self.eval_quality_function()
-            print("\tInitial L = " + str(self.eval_quality_function()))
-
-        self.x_affiliations = solve_euclidean_gamma_subproblem(
-            self.combined_dataset, self.x_affiliations,
-            self.combined_states, solver=self.gamma_solver,
-            use_trial_step=self.use_trial_step,
-            normalization=self.normalization)
-
-        if self.verbose:
-            updated_qf = self.eval_quality_function()
-            print("\tFinal L = " + str(updated_qf))
-            if updated_qf > initial_qf:
-                print("\tWARNING: quality function increased")
-            print("Successfully solved Gamma subproblem")
-
-    def find_optimal_approx(self, initial_affs, initial_x_states=None,
-                            initial_y_proj=None):
-        if initial_affs.shape != self.x_affiliations.shape:
+        Returns
+        -------
+        X_eps : array-like, shape (n_samples, n_x_features + n_y_features)
+            Merged dataset.
+        """
+        n_x_samples = X.shape[0]
+        n_y_samples = Y.shape[0]
+        if n_x_samples != n_y_samples:
             raise ValueError(
-                "initial guess for X affiliations has incorrect shape")
+                'Number of samples in X and Y must be the same, '
+                'but got (n_x_samples = %r, n_y_samples = %r)' %
+                (n_x_samples, n_y_samples))
 
-        self.x_affiliations = initial_affs
+        return np.hstack([Y, self.epsilon_weight * X])
 
-        if initial_x_states is not None:
-            if initial_x_states.shape != self.x_states.shape:
-                raise ValueError(
-                    "initial guess for X states has incorrect shape")
-            self.x_states = initial_x_states
+    def fit_transform(self, X, Y, Gamma=None, S=None):
+        """Calculate Euclidean SPA discretization and return transformed data.
 
-        if initial_y_proj is not None:
-            if initial_y_proj.shape != self.y_proj.shape:
-                raise ValueError(
-                    "initial guess for Y projector has incorrect shape")
-            self.y_proj = initial_y_proj
+        This is more efficient than calling fit followed by transform.
 
-        self.combined_states = np.hstack([self.y_proj,
-                                          self.rel_weight * self.x_states])
+        Parameters
+        ----------
+        X : array-like, shape (n_samples, n_x_features)
+            Data matrix to be discretized.
 
-        qf_old = None
-        qf_new = self.eval_quality_function()
-        iters = 0
-        if self.verbose:
-            print("Iterating with stopping tolerance = " +
-                  str(self.stopping_tol) +
-                  " and max. iterations = " + str(self.max_iterations))
-        while (not self.is_converged(qf_old, qf_new) and
-               iters < self.max_iterations):
-            qf_old = qf_new
+        Y : array-like, shape (n_samples, n_y_features)
+            Data matrix to be discretized.
 
-            if self.verbose:
-                print("Iteration = " + str(iters))
-                print("Solving S subproblem ...")
-            self.solve_subproblem_s()
+        Gamma : array-like, shape (n_samples, n_components)
+            If init='custom', used as initial guess for solution.
 
-            if self.verbose:
-                print("Solving Gamma subproblem ...")
-            self.solve_subproblem_gamma()
+        S : array-like, shape (n_components, n_x_features + n_y_features)
+            If init='custom', used as initial guess for solution.
 
-            qf_new = self.eval_quality_function()
-            iters += 1
+        Returns
+        -------
+        Gamma : array-like, shape (n_samples, n_components)
+            Represention of data.
+        """
+        X_eps = self._merge_datasets(X, Y)
 
-            if self.checkpoint and iters % self.checkpoint_iterations == 0:
-                self.create_checkpoint()
+        Gamma, S, n_iter_ = euclidean_spa(
+            X=X_eps, Gamma=Gamma, S=S, n_components=self.n_components,
+            init=self.init, solver=self.solver, tol=self.tol,
+            max_iter=self.max_iter, epsilon_states=self.epsilon_states,
+            verbose=self.verbose)
 
-        if (iters == self.max_iterations and
-            not self.is_converged(qf_old, qf_new)):
-            self.create_checkpoint()
-            raise RuntimeError(
-                "failed to converge")
+        self.reconstruction_err_ = _euclidean_spa_dist(
+            X_eps, Gamma, S, normalize=False)
 
-    def is_converged(self, old_qf, new_qf):
-        if old_qf is None:
-            return False
-        delta_qf = np.abs(old_qf - new_qf)
+        self.n_components_ = S.shape[0]
+        self.n_y_features_ = Y.shape[1]
+        self.n_x_features_ = X.shape[1]
+        self.components_ = S
+        self.n_iter_ = n_iter_
 
-        if np.abs(old_qf) > np.abs(new_qf):
-            min_qf = new_qf
-            max_qf = old_qf
-        else:
-            min_qf = old_qf
-            max_qf = new_qf
+        return Gamma
 
-        r_qf = 1.0 - np.abs(min_qf / max_qf)
+    def fit(self, X, Y, **params):
+        """Calculate Euclidean SPA discretization for the datasets X and Y.
 
-        return delta_qf < self.stopping_tol or r_qf < self.stopping_tol
+        Parameters
+        ----------
+        X : array-like, shape (n_samples, n_x_features)
+            Data matrix to be discretized.
 
-    def create_checkpoint(self):
-        temp_file = self.checkpoint_file + ".old"
-        if os.path.exists(self.checkpoint_file):
-            os.rename(self.checkpoint_file, temp_file)
+        Y : array-like, shape (n_samples, n_y_features)
+            Data matrix to be discretized.
 
-        if self.verbose:
-            print("Creating checkpoint in '" + self.checkpoint_file + "'")
+        Returns
+        -------
+        self
+        """
+        self.fit_transform(X, Y, **params)
+        return self
 
-        data = {"x_states": self.x_states, "y_proj": self.y_proj,
-                "x_affiliations": self.x_affiliations}
-        with open(self.checkpoint_file, "wb") as cpf:
-            pickle.dump(data, cpf, pickle.HIGHEST_PROTOCOL)
+    def transform(self, X, Y):
+        """Transform the data according to the fitted SPA discretization.
 
-        if os.path.exists(temp_file):
-            os.remove(temp_file)
+        Parameters
+        ----------
+        X : array-like, shape (n_samples, n_x_features)
+            Data matrix to compute representation for.
+
+        Y : array-like, shape (n_samples, n_y_features)
+
+        Returns
+        -------
+        Gamma : array-like, shape (n_samples, n_components)
+            Representation of data.
+        """
+        check_is_fitted(self, 'n_components_')
+
+        X_eps = self._merge_datasets(X, Y)
+
+        Gamma, _, n_iter_ = euclidean_spa(
+            X=X_eps, Gamma=None, S=self.components_,
+            n_components=self.n_components_,
+            init=self.init, solver=self.solver, tol=self.tol,
+            max_iter=self.max_iter,
+            epsilon_states=self.epsilon_states, verbose=self.verbose)
+
+        return Gamma
+
+    def inverse_transform(self, Gamma):
+        """Transform data back into its original space.
+
+        Parameters
+        ----------
+        Gamma : array-like, shape (n_samples, n_components)
+            Representation of data matrices.
+
+        Returns
+        -------
+        X : array-like, shape (n_samples, n_x_features)
+            Data matrix with original shape.
+
+        Y : array-like, shape (n_samples, n_y_features)
+            Data matrix with original shape.
+        """
+        check_is_fitted(self, 'n_components_')
+
+        X_eps = np.dot(Gamma, self.components_)
+        Y = X_eps[:, :self.n_y_features_]
+        X = X_eps[:, self.n_y_features:] / self.epsilon_weight
+
+        return X, Y
