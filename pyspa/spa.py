@@ -97,7 +97,7 @@ def _euclidean_spa_dist(X, Gamma, S, normalize=True):
         The Frobenius norm of the difference between the original data ``X``
         and the reconstructed data ``Gamma S`` with the desired normalization.
     """
-    dist = np.linalg.norm(X - Gamma @ S, 'fro') ** 2
+    dist = np.linalg.norm(X - np.dot(Gamma, S), 'fro') ** 2
     if normalize:
         return dist / np.size(X)
     else:
@@ -111,8 +111,8 @@ def _euclidean_spa_regularization_S(S):
     if n_components == 1:
         return 0
 
-    reg = (n_components * np.trace(np.transpose(S) @ S) -
-           np.sum(S @ np.transpose(S)))
+    reg = (n_components * np.trace(np.dot(np.transpose(S), S)) -
+           np.sum(np.dot(S, np.transpose(S))))
 
     prefactor = 2.0 / (n_components * n_features * (n_components - 1.0))
 
@@ -277,8 +277,8 @@ def _subspace_update_euclidean_spa_S(X, Gamma, S, epsilon_states=0):
     """Update states in Euclidean SPA method using exact minimizer."""
     n_samples, n_components = Gamma.shape
 
-    gtx = ((np.transpose(Gamma) @ X) / n_samples)
-    gtg = ((np.transpose(Gamma) @ Gamma) / n_samples)
+    gtx = (np.dot(np.transpose(Gamma), X) / n_samples)
+    gtg = (np.dot(np.transpose(Gamma), Gamma) / n_samples)
 
     prefactor = 2.0 * epsilon_states / n_components
     if n_components > 1:
@@ -335,15 +335,15 @@ def _subspace_update_euclidean_spa_Gamma(X, Gamma, S, tol=1e-4,
     n_samples, n_features = X.shape
 
     normalization = n_samples * n_features
-    q = (-2 * (X @ np.transpose(S)) / normalization)
-    P = (2 * (S @ np.transpose(S)) / normalization)
+    q = (-2 * np.dot(X, np.transpose(S)) / normalization)
+    P = (2 * np.dot(S, np.transpose(S)) / normalization)
 
     initial_cost = _euclidean_spa_dist(X, Gamma, S, normalize=True)
 
     # @todo better implementation of descent step
     evals = np.linalg.eigvalsh(P)
     alpha_try = 1.0 / np.max(np.abs(evals))
-    grad = (Gamma @ P + q)
+    grad = (np.dot(Gamma, P) + q)
     sol = simplex_projection(Gamma - alpha_try * grad)
 
     trial_cost = _euclidean_spa_dist(X, sol, S, normalize=True)
@@ -667,6 +667,10 @@ class EuclideanSPA(object):
     components_ : array-like, shape (n_components, n_features)
         The dictionary of states or atoms.
 
+    cost_ : number
+        Value of the Euclidean cost function for the obtained
+        discretization.
+
     reconstruction_err_ : number
         Frobenius norm of the matrix difference between the
         training data ``X`` and the reconstructed data
@@ -693,7 +697,7 @@ class EuclideanSPA(object):
 
     def __init__(self, n_components, init=None, solver='subspace',
                  tol=1e-4, max_iter=200, random_state=None,
-                 epsilon_states=0, verbose=0):
+                 epsilon_states=0, verbose=0, **params):
         self.n_components = n_components
         self.init = init
         self.solver = solver
@@ -702,6 +706,7 @@ class EuclideanSPA(object):
         self.random_state = random_state
         self.epsilon_states = epsilon_states
         self.verbose = verbose
+        self.params = params
 
     def fit_transform(self, X, Gamma=None, S=None):
         """Calculate Euclidean SPA discretization and return transformed data.
@@ -728,8 +733,11 @@ class EuclideanSPA(object):
             X=X, Gamma=Gamma, S=S, n_components=self.n_components,
             init=self.init, solver=self.solver, tol=self.tol,
             max_iter=self.max_iter, epsilon_states=self.epsilon_states,
-            verbose=self.verbose)
+            verbose=self.verbose, **self.params)
 
+        self.cost_ = _euclidean_spa_cost(
+            X, Gamma, S, epsilon_states=self.epsilon_states,
+            regularization='components', normalize=True)
         self.reconstruction_err_ = _euclidean_spa_dist(
             X, Gamma, S, normalize=False)
 
@@ -868,6 +876,10 @@ class JointEuclideanSPA(object):
     components_ : array-like, shape (n_components, n_features)
         The dictionary of states or atoms.
 
+    cost_ : number
+        Value of the Euclidean cost function for the obtained
+        discretization.
+
     reconstruction_err_ : number
         Frobenius norm of the matrix difference between the
         training data ``X_\epsilon`` and the reconstructed data
@@ -895,7 +907,7 @@ class JointEuclideanSPA(object):
 
     def __init__(self, n_components, init=None, solver='subspace',
                  tol=1e-4, max_iter=200, random_state=None,
-                 epsilon_states=0, epsilon_weight=1, verbose=0):
+                 epsilon_states=0, epsilon_weight=1, verbose=0, **params):
         self.n_components = n_components
         self.init = init
         self.solver = solver
@@ -905,6 +917,7 @@ class JointEuclideanSPA(object):
         self.epsilon_states = epsilon_states
         self.epsilon_weight = epsilon_weight
         self.verbose = verbose
+        self.params = params
 
     def _merge_datasets(self, X, Y):
         """Merge two datasets for performing joint discretization.
@@ -962,8 +975,11 @@ class JointEuclideanSPA(object):
             X=X_eps, Gamma=Gamma, S=S, n_components=self.n_components,
             init=self.init, solver=self.solver, tol=self.tol,
             max_iter=self.max_iter, epsilon_states=self.epsilon_states,
-            verbose=self.verbose)
+            verbose=self.verbose, **self.params)
 
+        self.cost_ = _euclidean_spa_cost(
+            X_eps, Gamma, S, epsilon_states=self.epsilon_states,
+            regularization='components', normalize=True)
         self.reconstruction_err_ = _euclidean_spa_dist(
             X_eps, Gamma, S, normalize=False)
 
