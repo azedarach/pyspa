@@ -219,7 +219,7 @@ def _initialize_euclidean_spa_random(X, n_components, random_state=None):
 
 
 def _initialize_euclidean_spa(X, n_components,
-                              init="random", random_state=None):
+                              init='random', random_state=None):
     """Return initial guesses for affiliations and states.
 
     Initial values for the affiliations Gamma and states S
