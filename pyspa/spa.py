@@ -1057,6 +1057,6 @@ class JointEuclideanSPA(object):
 
         X_eps = np.dot(Gamma, self.components_)
         Y = X_eps[:, :self.n_y_features_]
-        X = X_eps[:, self.n_y_features:] / self.epsilon_weight
+        X = X_eps[:, self.n_y_features_:] / self.epsilon_weight
 
         return X, Y
