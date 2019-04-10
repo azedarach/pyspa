@@ -7,7 +7,13 @@ import pickle
 
 from scipy.optimize import linprog
 
+from sklearn.cluster import KMeans
+from sklearn.utils import check_array, check_random_state
+from sklearn.utils.validation import check_is_fitted
+
 INTEGER_TYPES = (numbers.Integral, np.integer)
+
+FEMBV_KMEANS_INITIALIZATION_METHODS = (None, 'random', 'kmeans')
 
 
 def _create_fembv_checkpoint(Gamma, Theta, checkpoint_file):
@@ -24,9 +30,43 @@ def _create_fembv_checkpoint(Gamma, Theta, checkpoint_file):
         os.remove(temp_file)
 
 
+def _check_unit_axis_sums(A, whom, axis=0):
+    axis_sums = np.sum(A, axis=axis)
+    if not np.all(np.isclose(axis_sums, 1)):
+        raise ValueError(
+            'Array with incorrect axis sums passed to %s. '
+            'Expected sums along axis %d to be 1.'
+            % (whom, axis))
+
+
+def _check_array_shape(A, shape, whom):
+    if np.shape(A) != shape:
+        raise ValueError(
+            'Array with wrong shape passed to %s. '
+            'Expected %s, but got %s' % (whom, shape, np.shape(A)))
+
+
+def _check_init_fembv_Gamma(Gamma, shape, whom):
+    Gamma = check_array(Gamma)
+    _check_array_shape(Gamma, shape, whom)
+    _check_unit_axis_sums(Gamma, whom, axis=1)
+
+
+def _random_affiliations(shape, random_state=None):
+    """Return random matrix with unit row sums."""
+    rng = check_random_state(random_state)
+
+    Gamma = rng.uniform(size=shape)
+    row_sums = np.sum(Gamma, axis=1)
+    Gamma = Gamma / row_sums[:, np.newaxis]
+
+    return Gamma
+
+
 def _fembv_generic_cost(X, Gamma, Theta, distance_matrix,
+                        distance_matrix_pars=None,
                         epsilon_Theta=0, regularization_Theta=None):
-    G = distance_matrix(X, Theta)
+    G = distance_matrix(X, Theta, distance_matrix_pars)
     cost = np.trace(np.dot(np.transpose(Gamma), G))
     if regularization_Theta is not None and epsilon_Theta != 0:
         cost += epsilon_Theta * regularization_Theta(Theta)
@@ -56,9 +96,6 @@ def _fembv_Gamma_equality_constraints(n_components, V):
 
     A_eq = np.zeros((n_samples, 2 * n_coeffs))
     A_eq[:, :n_coeffs] = np.repeat(V, n_components, axis=1)
-#    for j in range(n_elem):
-#        A_eq[:, j:j + n_components] = np.broadcast_to(
-#            V[:, j].reshape((n_samples, 1)), (n_samples, n_components))
 
     b_eq = np.ones((n_samples,))
 
@@ -184,6 +221,8 @@ def _subspace_update_fembv_Gamma(G, c, fem_basis=None, max_iter=500, verbose=0,
 
 
 def _fit_generic_fembv_subspace(X, Gamma, Theta, distance_matrix,
+                                distance_matrix_pars=None,
+                                theta_update=None, theta_update_pars=None,
                                 epsilon_Theta=0, regularization_Theta=None,
                                 tol=1e-4, max_iter=200,
                                 update_Theta=True, verbose=0,
@@ -193,6 +232,39 @@ def _fit_generic_fembv_subspace(X, Gamma, Theta, distance_matrix,
 
     Parameters
     ----------
+    X : array-like, shape (n_samples, n_features)
+        Data matrix to be fitted.
+
+    Gamma : array-like, shape (n_samples, n_components)
+        If init='custom', used as initial guess for the solution.
+
+    Theta :
+        If init='custom', used as initial guess for the solution.
+        If update_Theta=False, used as a constant to solve for Gamma only.
+
+    distance_matrix : callable
+        Function callable with the signature distance_matrix(X, Theta, pars)
+        where pars is a tuple of additional parameters. Should return
+        an array of shape (n_samples, n_components) containing the local
+        model distances at each data point.
+
+    distance_matrix_pars : optional
+        Additional parameters to be passed as the last argument to the
+        distance matrix calculation.
+
+    theta_update : callable, optional
+        If given, must be callable with the signature
+        theta_update(X, Gamma, Theta, pars). Should return an updated
+        guess for the optimal parameters Theta. If not given, numerical
+        minimization of the cost function is performed.
+
+    epsilon_Theta : float, default: 0
+        Regularization parameter for model parameters.
+
+    regularization_Theta : optional, callable
+        If given, must be callable with the signature regularization_Theta(Theta)
+        and return a scalar value corresponding to a penalty on the parameters.
+
     tol : float, default: 1e-4
         Tolerance of the stopping condition.
 
@@ -229,6 +301,7 @@ def _fit_generic_fembv_subspace(X, Gamma, Theta, distance_matrix,
     for n_iter in range(max_iter):
         initial_cost = _fembv_generic_cost(
             X, Gamma, Theta, distance_matrix,
+            distance_matrix_pars=distance_matrix_pars,
             epsilon_Theta=epsilon_Theta,
             regularization_Theta=regularization_Theta)
 
@@ -245,6 +318,7 @@ def _fit_generic_fembv_subspace(X, Gamma, Theta, distance_matrix,
 
         final_cost = _fembv_generic_cost(
             X, Gamma, Theta, distance_matrix,
+            distance_matrix_pars=distance_matrix_pars,
             epsilon_Theta=epsilon_Theta,
             regularization_Theta=regularization_Theta)
 
@@ -268,10 +342,177 @@ def _fit_generic_fembv_subspace(X, Gamma, Theta, distance_matrix,
     return Gamma, Theta, n_iter
 
 
-def fembv_discrete(X, Gamma=None, pars=None, n_components=None,
-                 init=None, update_pars=True, solver='subspace', tol=1e-4,
-                 max_iter=200, random_state=None, fem_basis='hat',
-                 epsilon_pars=0, verbose=0, checkpoint=False,
+def _check_init_fembv_kmeans_Theta(Theta, shape, whom):
+    Theta = check_array(Theta)
+    _check_array_shape(Theta, shape, whom)
+
+
+def _initialize_fembv_kmeans_random(X, n_components, random_state=None):
+    """Return random initial affiliations and cluster parameters.
+
+    The affiliations matrix is first initialized with uniformly distributed
+    random numbers on [0, 1), before the normalization requirement is imposed.
+    The cluster parameters (centroids) are chosen as random rows of the
+    data matrix X.
+
+    Parameters
+    ----------
+    X : array-like, shape (n_samples, n_features)
+        The data matrix to be fitted
+
+    n_components : integer
+        The number of clusters desired
+
+    random_state : integer, RandomState or None
+        If an integer, random_state is the seed used by the
+        random number generator. If a RandomState instance,
+        random_state is the random number generator. If None,
+        the random number generator is the RandomState instance
+        used by `np.random`.
+
+    Returns
+    -------
+    Gamma : array-like, shape (n_samples, n_components)
+        Random initial guess for affiliations
+
+    Theta : array-like, shape (n_components, n_features)
+        Random initial guess for cluster centroids
+    """
+    n_samples, n_features = X.shape
+    rng = check_random_state(random_state)
+
+    rows = rng.choice(n_samples, n_components, replace=False)
+    Theta = X[rows]
+
+    Gamma = _random_affiliations((n_samples, n_components), random_state=rng)
+
+    return Gamma, Theta
+
+
+def _initialize_fembv_kmeans_kmeans(X, n_components, random_state=None):
+    """Return initial affiliations and cluster parameters from k-means clustering.
+
+    An initial k-means clustering is performed on the data. The initial
+    affiliations are set to the obtained cluster affiliations, and the
+    cluster parameters to the calculated centroids.
+
+    Parameters
+    ----------
+    X : array-like, shape (n_samples, n_features)
+        The data matrix to be fitted
+
+    n_components : integer
+        The number of clusters desired
+
+    random_state : integer, RandomState or None
+        If an integer, random_state is the seed used by the
+        random number generator. If a RandomState instance,
+        random_state is the random number generator. If None,
+        the random number generator is the RandomState instance
+        used by `np.random`.
+
+    Returns
+    -------
+    Gamma : array-like, shape (n_samples, n_components)
+        Initial guess for affiliations from k-means affiliations
+
+    Theta : array-like, shape (n_components, n_features)
+        Initial guess for cluster centroids from k-means centroids
+    """
+    kmeans = KMeans(n_clusters=n_components, random_state=random_state).fit(X)
+    Theta = kmeans.cluster_centers_
+
+    labels = kmeans.labels_
+    n_samples = X.shape[0]
+    Gamma = np.zeros((n_samples, n_components))
+    for i in range(n_samples):
+        Gamma[i, labels[i]] = 1
+
+    return Gamma, Theta
+
+
+def _initialize_fembv_kmeans(X, n_components, init='random',
+                             random_state=None):
+    """Return initial guesses for affiliations and cluster parameters.
+
+    Initial values for the affiliations Gamma and cluster parameters Theta
+    are calculated using the given initialization method.
+
+    Parameters
+    ----------
+    X : array-like, shape (n_samples, n_features)
+        The data matrix to be fitted.
+
+    n_components : integer
+        The number of clusters.
+
+    init : None | 'random' | 'kmeans'
+        Method used for initialization.
+        Default: 'random'
+        Valid options:
+
+        - None: falls back to 'random'.
+
+        - 'random': random initialization of the cluster affiliations
+            and centroids.
+
+        - 'kmeans': perform an initial k-means clustering of the data
+
+    random_state : integer, RandomState or None
+        If an integer, random_state is the seed used by the random number
+        generator. If a RandomState instance, random_state is the
+        random number generator. If None, the random number generator is
+        the RandomState instance used by `np.random`.
+
+    Returns
+    -------
+    Gamma : array-like, shape (n_samples, n_components)
+        Initial guess for affiliations
+
+    Theta : array-like, shape (n_components, n_features)
+        Initial guess for cluster parameters
+    """
+    if init is None:
+        init = 'random'
+
+    if init == 'random':
+        return _initialize_fembv_kmeans_random(
+            X, n_components, random_state=random_state)
+    elif init == 'kmeans':
+        return _initialize_fembv_kmeans_kmeans(
+            X, n_components, random_state=random_state)
+    else:
+        raise ValueError(
+            'Invalid init parameter: got %r instead of one of %r' %
+            (init, FEMBV_KMEANS_INITIALIZATION_METHODS))
+
+
+def _fembv_kmeans_Theta_update(X, Gamma, Theta, *pars):
+    Theta = np.dot(np.transpose(Gamma), X)
+    normalizations = np.sum(Gamma, axis=0)
+    return Theta / normalizations[:, np.newaxis]
+
+
+def _fembv_kmeans_distance_matrix(X, Theta, *pars):
+    n_samples, n_features = X.shape
+    n_components = Theta.shape[0]
+
+    G = np.zeros((n_samples, n_components))
+    for i in range(n_samples):
+        for j in range(n_components):
+            G[i, j] = np.linalg.norm(X[i] - Theta[j]) ** 2
+
+    return G
+
+
+def _fembv_kmeans_cost(X, Gamma, Theta):
+    return _fembv_generic_cost(X, Gamma, Theta, _fembv_kmeans_distance_matrix)
+
+
+def fembv_kmeans(X, Gamma=None, Theta=None, n_components=None,
+                 init=None, update_Theta=True, solver='subspace',
+                 tol=1e-4, max_iter=200, random_state=None, max_tv_norm=None,
+                 fem_basis='hat', verbose=0, checkpoint=False,
                  checkpoint_file=None, checkpoint_iter=None):
     n_samples, n_features = X.shape
     if n_components is None:
@@ -298,22 +539,30 @@ def fembv_discrete(X, Gamma=None, pars=None, n_components=None,
                 'Number of iterations to checkpoint after must be a '
                 'positive integer; got (checkpoint_iter=%r)' % checkpoint_iter)
 
-    if init == 'custom' and update_pars:
-        _check_init_Gamma(Gamma, (n_samples, n_components),
-                          'FEMBV (input Gamma)')
-        _check_init_pars(pars, (n_components, n_features),
-                         'FEMBV (input parameters)')
-    elif not update_pars:
-        _check_init_pars(pars, (n_components, n_features),
-                         'FEMBV (input parameters)')
-        Gamma = _random_affiliations(
-            (n_samples, n_components), random_state=random_state)
+    if init == 'custom' and update_Theta:
+        _check_init_fembv_Gamma(Gamma, (n_samples, n_components),
+                                'FEM-BV-KMeans (input Gamma)')
+        _check_init_fembv_kmeans_Theta(
+            Theta, (n_components, n_features), 'FEM-BV-KMeans (input Theta)')
+    elif not update_Theta:
+        _check_init_fembv_kmeans_Theta(Theta, (n_components, n_features),
+                                       'FEM-BV-KMeans (input Theta)')
+        Gamma, _ = _initialize_fembv_kmeans(X, n_components, init=init,
+                                            random_state=random_state)
     else:
-        Gamma, pars = _initialize_fembv(
-            X, n_components, init=init, random_state=random_state)
+        Gamma, Theta = _initialize_fembv_kmeans(X, n_components, init=init,
+                                                random_state=random_state)
 
     if solver == 'subspace':
-        Gamma, pars, n_iter = _fit_fembv_binary_subspace()
+        Gamma, Theta, n_iter = _fit_generic_fembv_subspace(
+            X, Gamma, Theta, _fembv_kmeans_Theta_update,
+            _fembv_kmeans_distance_matrix, distance_matrix_pars=None,
+            epsilon_Theta=0, regularization_Theta=None,
+            tol=tol, max_iter=max_iter, update_Theta=update_Theta,
+            max_tv_norm=max_tv_norm,
+            verbose=verbose, checkpoint=checkpoint,
+            checkpoint_file=checkpoint_file,
+            checkpoint_iter=checkpoint_iter)
     else:
         raise ValueError("Invalid solver parameter '%s'." % solver)
 
@@ -321,4 +570,181 @@ def fembv_discrete(X, Gamma=None, pars=None, n_components=None,
         warnings.warn('Maximum number of iterations %d reached.' % max_iter,
                       warnings.UserWarning)
 
-    return Gamma, pars, n_iter
+    return Gamma, Theta, n_iter
+
+
+class FEMBVKMeans(object):
+    r"""FEM-BV clustering with k-means distance function.
+
+    The local distance function is::
+
+        || x_t - \theta_i||_2^2
+
+    where x_t is row t of the data matrix, and \theta_t is the centroid
+    of cluster i.
+
+    The total objective function is minimized with an alternating
+    minimization with respect to the cluster centroids \theta_i and
+    the affiliations Gamma.
+
+    Parameters
+    ----------
+    n_clusters : integer or None
+        If an integer, the number of clusters. If None, then all features
+        are kept.
+
+    init : None | 'random' | 'kmeans' | 'custom'
+        Method used to initialize the algorithm.
+        Default: None
+        Valid options:
+
+        - None: falls back to 'random'
+
+        - 'random': random initialization of the cluster affiliations
+            and centroids.
+
+        - 'kmeans': perform an initial k-means clustering of the data
+
+        - 'custom': use custom matrices for Gamma and Theta
+
+    solver : 'subspace'
+        Numerical solver to use:
+        'subspace' is the subspace algorithm.
+
+    tol : float, default: 1e-4
+        Tolerance of the stopping condition.
+
+    max_iter : integer, default: 200
+        Maximum number of iterations before stopping.
+
+    random_state : integer, RandomState, or None
+        If an integer, random_state is the seed used by the
+        random number generator. If a RandomState instance,
+        random_state is the random number generator. If
+        None, the random number generator is the
+        RandomState instance used by `np.random`.
+
+    max_tv_norm : None, scalar or array-like, shape (n_clusters,)
+        If a scalar, a common maximum TV norm for all cluster
+        affiliations. If array-like, the maximum TV norm for
+        each of the separate affiliation sequences.
+
+    verbose : integer, default: 0
+        The verbosity level.
+
+    Attributes
+    ----------
+    components_ : array-like, shape (n_clusters, n_features)
+        The cluster parameters.
+
+    cost_ : number
+        Value of the FEM-BV cost function for the obtained fit.
+
+    n_iter_ : integer
+        Actual number of iterations.
+
+    Examples
+    --------
+    import numpy as np
+    X = np.random.rand(100, 4)
+    from pyspa.fembv import FEMBVKMeans
+    model = FEMBVKMeans(n_clusters=2, init='random', random_state=0)
+    Gamma = model.fit_transform(X)
+    Theta = model.components_
+
+    References
+    ----------
+    P. Metzner, L. Putzig, and I. Horenko, "Analysis of Persistent
+    Nonstationary Time Series and Applications", Communications in
+    Applied Mathematics and Computational Science 7, 2 (2012), 175 - 229
+    """
+
+    def __init__(self, n_clusters, init=None, solver='subspace',
+                 tol=1e-4, max_iter=200, random_state=None,
+                 max_tv_norm=None, verbose=0, **params):
+        self.n_clusters = n_clusters
+        self.init = init
+        self.solver = solver
+        self.tol = tol
+        self.max_iter = max_iter
+        self.random_state = random_state
+        self.max_tv_norm = max_tv_norm
+        self.verbose = verbose
+        self.params = params
+
+    def fit_transform(self, X, Gamma=None, Theta=None):
+        """Calculate FEM-BV-k-means fit for data and return affiliations.
+
+        This is more efficient than calling fit followed by transform.
+
+        Parameters
+        ----------
+        X : array-like, shape (n_samples, n_features)
+            Data matrix to be fitted.
+
+        Gamma : array-like, shape (n_samples, n_clusters)
+            If init='custom', used as initial guess for solution.
+
+        Theta : array-like, shape (n_clusters, n_features)
+            If init='custom', used as initial guess for solution.
+
+        Returns
+        -------
+        Gamma : array-like, shape (n_samples, n_clusters)
+            Affiliation sequence for the data.
+        """
+        Gamma, Theta, n_iter_ = fembv_kmeans(
+            X, Gamma=Gamma, Theta=Theta,
+            n_components=self.n_components,
+            init=self.init, update_Theta=True, solver=self.solver,
+            tol=self.tol, max_iter=self.max_iter,
+            random_state=self.random_state, max_tv_norm=self.max_tv_norm,
+            fem_basis=self.fem_basis,
+            verbose=self.verbose, **self.params)
+
+        self.cost_ = _fembv_kmeans_cost(X, Gamma, Theta)
+
+        self.n_components_ = Theta.shape[0]
+        self.components_ = Theta
+        self.n_iter_ = n_iter_
+
+        return Gamma
+
+    def fit(self, X, **params):
+        """Calculate FEM-BV-k-means fit for the data X.
+
+        Parameters
+        ----------
+        X : array-like, shape (n_samples, n_features)
+            Data matrix to be fitted.
+
+        Returns
+        -------
+        self
+        """
+        self.fit_transform(X, **params)
+        return self
+
+    def transform(self, X):
+        """Transform the data according to the fitted model.
+
+        Parameters
+        ----------
+        X : array-like, shape (n_samples, n_features)
+            Data matrix to compute representation for.
+
+        Returns
+        -------
+        Gamma : array-like, shape (n_samples, n_components)
+            Affiliation sequence for the data.
+        """
+        check_is_fitted(self, 'n_components_')
+
+        Gamma, _, n_iter_ = fembv_kmeans(
+            X=X, Gamma=None, Theta=self.components_,
+            n_components=self.n_components_, init=self.init,
+            solver=self.solver, tol=self.tol, max_iter=self.max_iter,
+            fem_basis=self.fem_basis, max_tv_norm=self.max_tv_norm,
+            verbose=self.verbose)
+
+        return Gamma

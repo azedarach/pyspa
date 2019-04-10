@@ -45,7 +45,7 @@ def _check_array_shape(A, shape, whom):
     if np.shape(A) != shape:
         raise ValueError(
             'Array with wrong shape passed to %s. '
-            'Expected %s, but got %s ' % (whom, shape, np.shape(A)))
+            'Expected %s, but got %s' % (whom, shape, np.shape(A)))
 
 
 def _check_init_Gamma(Gamma, shape, whom):
