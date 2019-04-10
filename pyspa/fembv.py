@@ -7,6 +7,8 @@ import pickle
 
 from scipy.optimize import linprog
 
+INTEGER_TYPES = (numbers.Integral, np.integer)
+
 
 def _create_fembv_checkpoint(Gamma, Theta, checkpoint_file):
     """Serialize model components for checkpointing."""
@@ -47,8 +49,68 @@ def _fembv_convergence_check(old_cost, new_cost, tol):
     return delta_cost < tol or rel_cost < tol
 
 
+def _fembv_Gamma_equality_constraints(n_components, V):
+    """Return vector form of equality constraints for affiliations."""
+    n_samples, n_elem = V.shape
+    n_coeffs = n_components * n_elem
+
+    A_eq = np.zeros((n_samples, 2 * n_coeffs))
+    A_eq[:, :n_coeffs] = np.repeat(V, n_components, axis=1)
+#    for j in range(n_elem):
+#        A_eq[:, j:j + n_components] = np.broadcast_to(
+#            V[:, j].reshape((n_samples, 1)), (n_samples, n_components))
+
+    b_eq = np.ones((n_samples,))
+
+    return A_eq, b_eq
+
+
+def _fembv_Gamma_upper_bound_constraints(n_components, V, c):
+    """Return vector form of upper bound constraints for affiliations."""
+    n_samples, n_elem = V.shape
+    n_gamma_points = n_components * n_samples
+    n_eta_points = n_components * (n_samples - 1)
+    n_coeffs = n_components * n_elem
+
+    DV = np.diff(V, axis=0)
+
+    V_expanded = np.zeros((n_gamma_points, n_coeffs))
+    DV_expanded = np.zeros((n_eta_points, n_coeffs))
+    for i in range(n_samples):
+        for k in range(n_components):
+            row = k + i * n_components
+            V_expanded[row, k:k + n_coeffs:n_components] = V[i, :]
+            if i != n_samples - 1:
+                DV_expanded[row, k:k + n_coeffs:n_components] = DV[i, :]
+
+    A_pos = np.block([[-V_expanded, np.zeros((n_gamma_points, n_coeffs))],
+                      [np.zeros((n_eta_points, n_coeffs)),
+                       -V_expanded[:-n_components]]])
+    b_pos = np.zeros(n_gamma_points + n_eta_points)
+
+    A_bv = np.zeros((n_components, 2 * n_coeffs))
+    for i in range(n_components):
+        for k in range(n_elem):
+            idx = n_coeffs + i + k * n_components
+            A_bv[i, idx] = np.sum(V[:-1, k])
+
+    if np.isscalar(c):
+        b_bv = np.full(n_components, c)
+    else:
+        b_bv = c
+
+    A_aux = np.block([[DV_expanded, -V_expanded[:-n_components]],
+                      [-DV_expanded, -V_expanded[:-n_components]]])
+    b_aux = np.zeros(2 * n_eta_points)
+
+    A_ub = np.vstack([A_pos, A_bv, A_aux])
+    b_ub = np.concatenate([b_pos, b_bv, b_aux])
+
+    return A_ub, b_ub
+
+
 def _subspace_update_fembv_Gamma(G, c, fem_basis=None, max_iter=500, verbose=0,
-    method='interior-point'):
+                                 method='interior-point'):
     """Update affiliations in FEM-BV using linear programming.
 
     Parameters
@@ -65,6 +127,23 @@ def _subspace_update_fembv_Gamma(G, c, fem_basis=None, max_iter=500, verbose=0,
     fem_basis : callable, optional
         If given, should return an array of size (n_samples, n_elements)
         containing the value of the finite elements at each sample point.
+
+    max_iter : integer, default: 500
+        Maximum number of iterations before stopping.
+
+    verbose : integer, default: 0
+        The verbosity level.
+
+    method : None | 'interioir-point' : 'simplex'
+        Method used to initialize the algorithm.
+        Default: None
+        Valid options:
+
+        - None: falls back to 'interior-point'
+
+        - 'interior-point': uses interior point method
+
+        - 'simplex': uses simplex method
 
     Returns
     -------
@@ -83,18 +162,8 @@ def _subspace_update_fembv_Gamma(G, c, fem_basis=None, max_iter=500, verbose=0,
     vtg = np.dot(np.transpose(V), G)
     g_vec = np.ravel(vtg)
 
-    A_eq = np.zeros((n_samples, 2 * n_coeffs))
-
-    b_eq = np.ones((n_samples,))
-
-    b_pos = np.zeros(n_components * (2 * n_samples - 1))
-    if np.isscalar(c):
-        b_bv = np.full(n_components, c)
-    else:
-        b_bv = c
-    b_aux = np.zeros(2 * n_components * (n_samples - 1))
-
-    b_ub = np.concatenate([b_pos, b_bv, b_aux])
+    A_eq, b_eq = _fembv_Gamma_equality_constraints(n_components, V)
+    A_ub, b_ub = _fembv_Gamma_upper_bound_constraints(n_components, V, c)
 
     options = {'disp': verbose > 0, 'maxiter': max_iter}
     res = linprog(g_vec, A_ub=A_ub, b_ub=b_ub, A_eq=A_eq, b_eq=b_eq,
