@@ -4,6 +4,7 @@ import warnings
 import numpy as np
 import os
 import pickle
+import scipy.sparse as sps
 
 from scipy.optimize import linprog
 
@@ -14,6 +15,73 @@ from sklearn.utils.validation import check_is_fitted
 INTEGER_TYPES = (numbers.Integral, np.integer)
 
 FEMBV_KMEANS_INITIALIZATION_METHODS = (None, 'random', 'kmeans')
+
+
+class PiecewiseConstantFEMBasis(object):
+    def __init__(self, width=1, value=1):
+        self.width = width
+        self.value = value
+
+    def _width(self):
+        width = int(np.floor(self.width))
+        if width < 1:
+            width == 1
+        return width
+
+    def _basis_func(self, i, grid_points):
+        value = np.zeros(grid_points.shape)
+        value[grid_points - i < self._width()] = self.value
+        value[grid_points < i] = 0
+        return value
+
+    def __call__(self, n_grid_points):
+        grid_points = np.arange(n_grid_points)
+        width = self._width()
+
+        i_max = int(np.floor((n_grid_points - 1) / width))
+        left_end_points = width * np.arange(i_max + 1)
+
+        n_elements = np.size(left_end_points)
+        V = np.zeros((n_grid_points, n_elements))
+        for i, v in enumerate(left_end_points):
+            V[:, i] = self._basis_func(v, grid_points)
+
+        return V
+
+
+class TriangleFEMBasis(object):
+    def __init__(self, n_points=3, value=1):
+        self.n_points = n_points
+        self.value = value
+
+    def _basis_func(self, i, grid_points):
+        half_width = int((self.n_points - 1) / 2)
+        slope = self.value / half_width
+        value = np.zeros(grid_points.shape)
+        value[grid_points <= i] = (
+            self.value + slope * (grid_points[grid_points <= i] - i))
+        value[grid_points > i] = (
+            self.value - slope * (grid_points[grid_points > i] - i))
+        value[np.abs(grid_points - i) >= half_width] = 0
+        return value
+
+    def __call__(self, n_grid_points):
+        if self.n_points % 2 == 0:
+            raise ValueError('number of element points must be an odd number')
+
+        half_width = int((self.n_points - 1) / 2)
+        if n_grid_points < half_width:
+            raise ValueError('too few grid points')
+
+        grid_points = np.arange(n_grid_points)
+        i_max = int(np.floor((n_grid_points - 1) / half_width))
+        midpoints = half_width * np.arange(i_max + 1)
+        n_elements = np.size(midpoints)
+        V = np.zeros((n_grid_points, n_elements))
+        for i, v in enumerate(midpoints):
+            V[:, i] = self._basis_func(v, grid_points)
+
+        return V
 
 
 def _create_fembv_checkpoint(Gamma, Theta, checkpoint_file):
@@ -94,15 +162,15 @@ def _fembv_Gamma_equality_constraints(n_components, V):
     n_samples, n_elem = V.shape
     n_coeffs = n_components * n_elem
 
-    A_eq = np.zeros((n_samples, 2 * n_coeffs))
+    A_eq = sps.lil_matrix((n_samples, 2 * n_coeffs))
     A_eq[:, :n_coeffs] = np.repeat(V, n_components, axis=1)
 
     b_eq = np.ones((n_samples,))
 
-    return A_eq, b_eq
+    return A_eq.tocsr(), b_eq
 
 
-def _fembv_Gamma_upper_bound_constraints(n_components, V, c):
+def _fembv_Gamma_upper_bound_constraints(n_components, V, max_tv_norm=None):
     """Return vector form of upper bound constraints for affiliations."""
     n_samples, n_elem = V.shape
     n_gamma_points = n_components * n_samples
@@ -111,8 +179,8 @@ def _fembv_Gamma_upper_bound_constraints(n_components, V, c):
 
     DV = np.diff(V, axis=0)
 
-    V_expanded = np.zeros((n_gamma_points, n_coeffs))
-    DV_expanded = np.zeros((n_eta_points, n_coeffs))
+    V_expanded = sps.lil_matrix((n_gamma_points, n_coeffs))
+    DV_expanded = sps.lil_matrix((n_eta_points, n_coeffs))
     for i in range(n_samples):
         for k in range(n_components):
             row = k + i * n_components
@@ -120,33 +188,39 @@ def _fembv_Gamma_upper_bound_constraints(n_components, V, c):
             if i != n_samples - 1:
                 DV_expanded[row, k:k + n_coeffs:n_components] = DV[i, :]
 
-    A_pos = np.block([[-V_expanded, np.zeros((n_gamma_points, n_coeffs))],
-                      [np.zeros((n_eta_points, n_coeffs)),
-                       -V_expanded[:-n_components]]])
+    A_pos = sps.bmat([[-V_expanded, None],
+                      [None, -V_expanded[:-n_components]]])
     b_pos = np.zeros(n_gamma_points + n_eta_points)
 
-    A_bv = np.zeros((n_components, 2 * n_coeffs))
+    A_aux = sps.bmat([[DV_expanded, -V_expanded[:-n_components]],
+                      [-DV_expanded, -V_expanded[:-n_components]]])
+    b_aux = np.zeros(2 * n_eta_points)
+
+    if max_tv_norm is None:
+        A_ub = sps.vstack([A_pos, A_aux])
+        b_ub = np.concatenate([b_pos, b_aux])
+        return A_ub, b_ub
+
+    A_bv = sps.lil_matrix((n_components, 2 * n_coeffs))
     for i in range(n_components):
         for k in range(n_elem):
             idx = n_coeffs + i + k * n_components
             A_bv[i, idx] = np.sum(V[:-1, k])
 
-    if np.isscalar(c):
-        b_bv = np.full(n_components, c)
+    if np.isscalar(max_tv_norm):
+        b_bv = np.full(n_components, max_tv_norm)
     else:
-        b_bv = c
+        b_bv = max_tv_norm
 
-    A_aux = np.block([[DV_expanded, -V_expanded[:-n_components]],
-                      [-DV_expanded, -V_expanded[:-n_components]]])
-    b_aux = np.zeros(2 * n_eta_points)
-
-    A_ub = np.vstack([A_pos, A_bv, A_aux])
-    b_ub = np.concatenate([b_pos, b_bv, b_aux])
+    A_ub = sps.vstack([A_pos, A_aux, A_bv])
+    b_ub = np.concatenate([b_pos, b_aux, b_bv])
 
     return A_ub, b_ub
 
 
-def _subspace_update_fembv_Gamma(G, c, fem_basis=None, max_iter=500, verbose=0,
+def _subspace_update_fembv_Gamma(G, basis_values, A_ub, b_ub, A_eq, b_eq,
+                                 tol=1e-5, max_iter=500, verbose=0,
+                                 bounds=(None, None),
                                  method='interior-point'):
     """Update affiliations in FEM-BV using linear programming.
 
@@ -155,21 +229,16 @@ def _subspace_update_fembv_Gamma(G, c, fem_basis=None, max_iter=500, verbose=0,
     G : array-like, shape (n_samples, n_components)
         Matrix of model distances.
 
-    c : scalar or array-like, shape (n_components,)
-        If scalar, a single value corresponding to an upper bound on the
-        total variation norm of all affiliations. If array-like, separate
-        upper bounds on the total variation norm for each set of
-        affiliations.
-
-    fem_basis : callable, optional
-        If given, should return an array of size (n_samples, n_elements)
-        containing the value of the finite elements at each sample point.
 
     max_iter : integer, default: 500
         Maximum number of iterations before stopping.
 
     verbose : integer, default: 0
         The verbosity level.
+
+    bounds : sequence, optional
+        If given, additional lower and upper bounds to place on
+        finite-element coefficients of the solution.
 
     method : None | 'interioir-point' : 'simplex'
         Method used to initialize the algorithm.
@@ -191,20 +260,20 @@ def _subspace_update_fembv_Gamma(G, c, fem_basis=None, max_iter=500, verbose=0,
         Auxiliary variables used to enforce bounded variation constraint.
     """
     n_samples, n_components = G.shape
-
-    V = fem_basis(n_samples)
-    n_elem = V.shape[1]
+    n_elem = basis_values.shape[1]
     n_coeffs = n_components * n_elem
 
-    vtg = np.dot(np.transpose(V), G)
-    g_vec = np.ravel(vtg)
+    vtg = np.dot(np.transpose(basis_values), G)
+    g_vec = np.concatenate([np.ravel(vtg), np.zeros(n_coeffs)])
 
-    A_eq, b_eq = _fembv_Gamma_equality_constraints(n_components, V)
-    A_ub, b_ub = _fembv_Gamma_upper_bound_constraints(n_components, V, c)
-
-    options = {'disp': verbose > 0, 'maxiter': max_iter}
+    if sps.issparse(A_eq) or sps.issparse(A_ub):
+        is_sparse = True
+    else:
+        is_sparse = False
+    options = {'disp': verbose > 0, 'maxiter': max_iter,
+               'tol': tol, 'sparse': is_sparse}
     res = linprog(g_vec, A_ub=A_ub, b_ub=b_ub, A_eq=A_eq, b_eq=b_eq,
-                  method=method, options=options)
+                  bounds=bounds, method=method, options=options)
 
     if not res['success']:
         raise RuntimeError('failed to solve linear optimization problem')
@@ -214,17 +283,19 @@ def _subspace_update_fembv_Gamma(G, c, fem_basis=None, max_iter=500, verbose=0,
     alpha = np.reshape(sol[:n_coeffs], (n_elem, n_components))
     beta = np.reshape(sol[n_coeffs:], (n_elem, n_components))
 
-    Gamma = np.dot(V, alpha)
-    Eta = np.dot(V[:n_samples, ...], beta)
+    Gamma = np.dot(basis_values, alpha)
+    Eta = np.dot(basis_values[:n_samples, ...], beta)
 
     return Gamma, Eta
 
 
-def _fit_generic_fembv_subspace(X, Gamma, Theta, distance_matrix,
+def _fit_generic_fembv_subspace(X, Gamma, Theta, distance_matrix, theta_update,
                                 distance_matrix_pars=None,
-                                theta_update=None, theta_update_pars=None,
+                                theta_update_pars=None,
+                                max_tv_norm=None,
                                 epsilon_Theta=0, regularization_Theta=None,
-                                tol=1e-4, max_iter=200,
+                                tol=1e-4, max_iter=200, fem_basis='constant',
+                                method='interior-point',
                                 update_Theta=True, verbose=0,
                                 checkpoint=False, checkpoint_file=None,
                                 checkpoint_iter=None):
@@ -248,28 +319,65 @@ def _fit_generic_fembv_subspace(X, Gamma, Theta, distance_matrix,
         an array of shape (n_samples, n_components) containing the local
         model distances at each data point.
 
+    theta_update : callable
+        Function callable with the signature
+        theta_update(X, Gamma, Theta, pars). Should return an updated
+        guess for the optimal parameters Theta.
+
     distance_matrix_pars : optional
         Additional parameters to be passed as the last argument to the
         distance matrix calculation.
 
-    theta_update : callable, optional
-        If given, must be callable with the signature
-        theta_update(X, Gamma, Theta, pars). Should return an updated
-        guess for the optimal parameters Theta. If not given, numerical
-        minimization of the cost function is performed.
+    theta_update_pars : optional
+        Additional parameters to be passed as the last argument to the
+        update method for the parameters.
+
+    max_tv_norm : None, scalar or array-like, shape (n_components,)
+        If a scalar, a common maximum TV norm for all cluster
+        affiliations. If array-like, the maximum TV norm for
+        each of the separate affiliation sequences. If not given,
+        no upper bound is imposed.
 
     epsilon_Theta : float, default: 0
         Regularization parameter for model parameters.
 
     regularization_Theta : optional, callable
-        If given, must be callable with the signature regularization_Theta(Theta)
-        and return a scalar value corresponding to a penalty on the parameters.
+        If given, must be callable with the signature
+        regularization_Theta(Theta) and return a scalar value corresponding
+        to a penalty on the parameters.
 
     tol : float, default: 1e-4
         Tolerance of the stopping condition.
 
     max_iter : integer, default: 200
         Maximum number of iterations before stopping.
+
+    fem_basis : None, string, or callable
+        The choice of finite-element basis functions to use. If given
+        as a string, valid options are:
+
+        - 'constant' : use piecewise constant basis functions
+
+        - 'triangle' : use triangle basis functions with a width of 3
+            grid points
+
+        If given as a callable object, must be callable with the
+        signature fem_basis(n_samples), and should return an
+        array of shape (n_samples, n_elements) where n_elements is
+        the number of finite-element basis functions, containing the
+        values of the basis functions at each grid point. If None,
+        defaults to piecewise constant basis functions.
+
+    method : None | 'interior-point' | 'simplex'
+        Method used to initialize the algorithm.
+        Default: None
+        Valid options:
+
+        - None: falls back to 'interior-point'
+
+        - 'interior-point': uses interior point method
+
+        - 'simplex': uses simplex method
 
     update_Theta : boolean, default: True
         If True, both Gamma and Theta will be estimated from initial guesses.
@@ -298,6 +406,20 @@ def _fit_generic_fembv_subspace(X, Gamma, Theta, distance_matrix,
     n_iter : integer
         The number of iterations done in the algorithm.
     """
+    if fem_basis is None or fem_basis == 'constant':
+        fem_basis = PiecewiseConstantFEMBasis()
+    elif fem_basis == 'triangle':
+        fem_basis = TriangleFEMBasis()
+    elif not callable(fem_basis):
+        raise ValueError('finite-element basis must be callable')
+
+    n_samples, n_components = Gamma.shape
+    V = fem_basis(n_samples)
+
+    A_eq, b_eq = _fembv_Gamma_equality_constraints(n_components, V)
+    A_ub, b_ub = _fembv_Gamma_upper_bound_constraints(
+        n_components, V, max_tv_norm=max_tv_norm)
+
     for n_iter in range(max_iter):
         initial_cost = _fembv_generic_cost(
             X, Gamma, Theta, distance_matrix,
@@ -309,12 +431,12 @@ def _fit_generic_fembv_subspace(X, Gamma, Theta, distance_matrix,
             start_cost = initial_cost
 
         if update_Theta:
-            Theta = theta_update(X, Gamma)
+            Theta = theta_update(X, Gamma, theta_update_pars)
 
-        G = distance_matrix(X, Theta)
-        Gamma = _subspace_update_fembv_Gamma(
-            G, c, fem_basis=fem_basis, max_iter=max_iter,
-            method=method, verbose=verbose)
+        G = distance_matrix(X, Theta, distance_matrix_pars)
+        Gamma, _ = _subspace_update_fembv_Gamma(
+            G, V, A_ub=A_ub, b_ub=b_ub, A_eq=A_eq, b_eq=b_eq,
+            max_iter=max_iter, method=method, verbose=verbose)
 
         final_cost = _fembv_generic_cost(
             X, Gamma, Theta, distance_matrix,
@@ -512,7 +634,8 @@ def _fembv_kmeans_cost(X, Gamma, Theta):
 def fembv_kmeans(X, Gamma=None, Theta=None, n_components=None,
                  init=None, update_Theta=True, solver='subspace',
                  tol=1e-4, max_iter=200, random_state=None, max_tv_norm=None,
-                 fem_basis='hat', verbose=0, checkpoint=False,
+                 fem_basis='constant', method='interior-point',
+                 verbose=0, checkpoint=False,
                  checkpoint_file=None, checkpoint_iter=None):
     n_samples, n_features = X.shape
     if n_components is None:
@@ -555,11 +678,13 @@ def fembv_kmeans(X, Gamma=None, Theta=None, n_components=None,
 
     if solver == 'subspace':
         Gamma, Theta, n_iter = _fit_generic_fembv_subspace(
-            X, Gamma, Theta, _fembv_kmeans_Theta_update,
-            _fembv_kmeans_distance_matrix, distance_matrix_pars=None,
+            X, Gamma, Theta, _fembv_kmeans_distance_matrix,
+            _fembv_kmeans_Theta_update,
+            theta_update_pars=None, distance_matrix_pars=None,
             epsilon_Theta=0, regularization_Theta=None,
             tol=tol, max_iter=max_iter, update_Theta=update_Theta,
-            max_tv_norm=max_tv_norm,
+            max_tv_norm=max_tv_norm, fem_basis=fem_basis,
+            method=method,
             verbose=verbose, checkpoint=checkpoint,
             checkpoint_file=checkpoint_file,
             checkpoint_iter=checkpoint_iter)
@@ -589,7 +714,7 @@ class FEMBVKMeans(object):
 
     Parameters
     ----------
-    n_clusters : integer or None
+    n_components : integer or None
         If an integer, the number of clusters. If None, then all features
         are kept.
 
@@ -624,17 +749,34 @@ class FEMBVKMeans(object):
         None, the random number generator is the
         RandomState instance used by `np.random`.
 
-    max_tv_norm : None, scalar or array-like, shape (n_clusters,)
+    max_tv_norm : None, scalar or array-like, shape (n_components,)
         If a scalar, a common maximum TV norm for all cluster
         affiliations. If array-like, the maximum TV norm for
-        each of the separate affiliation sequences.
+        each of the separate affiliation sequences. If not given,
+        no upper bound is imposed.
 
     verbose : integer, default: 0
         The verbosity level.
 
+    fem_basis : None, string, or callable
+        The choice of finite-element basis functions to use. If given
+        as a string, valid options are:
+
+        - 'constant' : use piecewise constant basis functions
+
+        - 'triangle' : use triangle basis functions with a width of 3
+            grid points
+
+        If given as a callable object, must be callable with the
+        signature fem_basis(n_samples), and should return an
+        array of shape (n_samples, n_elements) where n_elements is
+        the number of finite-element basis functions, containing the
+        values of the basis functions at each grid point. If None,
+        defaults to piecewise constant basis functions.
+
     Attributes
     ----------
-    components_ : array-like, shape (n_clusters, n_features)
+    components_ : array-like, shape (n_components, n_features)
         The cluster parameters.
 
     cost_ : number
@@ -648,7 +790,7 @@ class FEMBVKMeans(object):
     import numpy as np
     X = np.random.rand(100, 4)
     from pyspa.fembv import FEMBVKMeans
-    model = FEMBVKMeans(n_clusters=2, init='random', random_state=0)
+    model = FEMBVKMeans(n_components=2, init='random', random_state=0)
     Gamma = model.fit_transform(X)
     Theta = model.components_
 
@@ -659,10 +801,11 @@ class FEMBVKMeans(object):
     Applied Mathematics and Computational Science 7, 2 (2012), 175 - 229
     """
 
-    def __init__(self, n_clusters, init=None, solver='subspace',
+    def __init__(self, n_components, init=None, solver='subspace',
                  tol=1e-4, max_iter=200, random_state=None,
-                 max_tv_norm=None, verbose=0, **params):
-        self.n_clusters = n_clusters
+                 max_tv_norm=None, verbose=0, fem_basis='constant',
+                 **params):
+        self.n_components = n_components
         self.init = init
         self.solver = solver
         self.tol = tol
@@ -670,6 +813,7 @@ class FEMBVKMeans(object):
         self.random_state = random_state
         self.max_tv_norm = max_tv_norm
         self.verbose = verbose
+        self.fem_basis = fem_basis
         self.params = params
 
     def fit_transform(self, X, Gamma=None, Theta=None):
@@ -682,15 +826,15 @@ class FEMBVKMeans(object):
         X : array-like, shape (n_samples, n_features)
             Data matrix to be fitted.
 
-        Gamma : array-like, shape (n_samples, n_clusters)
+        Gamma : array-like, shape (n_samples, n_components)
             If init='custom', used as initial guess for solution.
 
-        Theta : array-like, shape (n_clusters, n_features)
+        Theta : array-like, shape (n_components, n_features)
             If init='custom', used as initial guess for solution.
 
         Returns
         -------
-        Gamma : array-like, shape (n_samples, n_clusters)
+        Gamma : array-like, shape (n_samples, n_components)
             Affiliation sequence for the data.
         """
         Gamma, Theta, n_iter_ = fembv_kmeans(

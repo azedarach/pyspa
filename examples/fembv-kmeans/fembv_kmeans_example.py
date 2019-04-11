@@ -6,6 +6,7 @@ from matplotlib.ticker import MultipleLocator, FormatStrFormatter
 from sklearn.cluster import KMeans
 from sklearn.utils import check_random_state
 
+from pyspa.fembv import FEMBVKMeans
 
 N_SAMPLES = 6000
 N_SWITCHES = 2
@@ -54,6 +55,23 @@ def run_kmeans(X, n_clusters=2, n_init=10, random_state=None):
     return kmeans.cluster_centers_, kmeans.labels_
 
 
+def run_fembv_kmeans(X, n_clusters=2, max_tv_norm=2, n_init=10,
+                     random_state=None):
+    best_cost = None
+    best_model = None
+    best_Gamma = None
+    for i in range(n_init):
+        model = FEMBVKMeans(n_components=n_clusters, max_tv_norm=max_tv_norm,
+                            random_state=random_state, fem_basis='constant', verbose=1)
+        Gamma = model.fit_transform(X)
+        cost = model.cost_
+        if best_cost is None or cost < best_cost:
+            best_cost = cost
+            best_model = model
+            best_Gamma = Gamma
+    return best_model.components_, best_Gamma
+
+
 def plot_results(X, Gamma_true, kmeans_centroids, kmeans_labels):
     fig, ax = plt.subplots(nrows=2, ncols=2, figsize=(11, 8), squeeze=False)
     fig.subplots_adjust(hspace=0.3)
@@ -96,7 +114,6 @@ def plot_results(X, Gamma_true, kmeans_centroids, kmeans_labels):
     ax[1, 0].set_ylabel(r'$x_2$')
     ax[1, 0].set_title(r'k-means clusters')
 
-
     plt.show()
     plt.close()
 
@@ -110,6 +127,8 @@ def main():
 
     kmeans_centroids, kmeans_labels = run_kmeans(
         X, n_clusters=N_CLUSTERS, n_init=N_INIT)
+    fembv_centrods, fembv_affs = run_fembv_kmeans(
+        X, n_clusters=N_CLUSTERS, max_tv_norm=N_SWITCHES, n_init=N_INIT)
     plot_results(X, Gamma_true, kmeans_centroids, kmeans_labels)
 
 
