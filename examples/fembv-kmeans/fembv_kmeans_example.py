@@ -72,7 +72,8 @@ def run_fembv_kmeans(X, n_clusters=2, max_tv_norm=2, n_init=10,
     return best_model.components_, best_Gamma
 
 
-def plot_results(X, Gamma_true, kmeans_centroids, kmeans_labels):
+def plot_results(X, Gamma_true, kmeans_centroids, kmeans_labels, fembv_centroids,
+    fembv_affs):
     fig, ax = plt.subplots(nrows=2, ncols=2, figsize=(11, 8), squeeze=False)
     fig.subplots_adjust(hspace=0.3)
 
@@ -80,7 +81,6 @@ def plot_results(X, Gamma_true, kmeans_centroids, kmeans_labels):
     true_affs = np.zeros(n_samples, dtype='i8')
 
     markers = itertools.cycle(('.', '+', 's'))
-    colors = itertools.cycle(('r', 'g', 'b', 'y', 'c', 'o', 'k'))
 
     for i in range(N_CLUSTERS):
         true_affs[Gamma_true[:, i] == 1] = i + 1
@@ -100,6 +100,7 @@ def plot_results(X, Gamma_true, kmeans_centroids, kmeans_labels):
     ax[0, 1].set_ylabel(r'Cluster affiliation')
     ax[0, 1].set_title(r'True affiliations')
 
+    colors = itertools.cycle(('r', 'g', 'b', 'y', 'c', 'k'))
     kmeans_n_clusters = kmeans_centroids.shape[0]
     for j in range(kmeans_n_clusters):
         c = next(colors)
@@ -114,6 +115,22 @@ def plot_results(X, Gamma_true, kmeans_centroids, kmeans_labels):
     ax[1, 0].set_ylabel(r'$x_2$')
     ax[1, 0].set_title(r'k-means clusters')
 
+    colors = itertools.cycle(('r', 'g', 'b', 'y', 'c', 'k'))
+    fembv_n_clusters = fembv_centroids.shape[0]
+    vp = np.argmax(fembv_affs, axis=1)
+    for j in range(fembv_n_clusters):
+        c = next(colors)
+        mask = vp == j
+        for i in range(N_CLUSTERS):
+            cluster_data = X[np.logical_and(true_affs == i + 1, mask)]
+            ax[1, 1].plot(cluster_data[:, 0], cluster_data[:, 1],
+                          marker=next(markers), color=c, linestyle='none')
+        ax[1, 1].plot(fembv_centroids[j, 0], fembv_centroids[j, 1], 'kx')
+
+    ax[1, 1].set_xlabel(r'$x_1$')
+    ax[1, 1].set_ylabel(r'$x_2$')
+    ax[1, 1].set_title(r'FEM-BV-k-means clusters')
+
     plt.show()
     plt.close()
 
@@ -127,9 +144,11 @@ def main():
 
     kmeans_centroids, kmeans_labels = run_kmeans(
         X, n_clusters=N_CLUSTERS, n_init=N_INIT)
-    fembv_centrods, fembv_affs = run_fembv_kmeans(
-        X, n_clusters=N_CLUSTERS, max_tv_norm=N_SWITCHES, n_init=N_INIT)
-    plot_results(X, Gamma_true, kmeans_centroids, kmeans_labels)
+    fembv_centroids, fembv_affs = run_fembv_kmeans(
+        X, n_clusters=N_CLUSTERS, max_tv_norm=N_SWITCHES, n_init=1)
+
+    plot_results(X, Gamma_true, kmeans_centroids, kmeans_labels,
+        fembv_centroids, fembv_affs)
 
 
 if __name__ == '__main__':

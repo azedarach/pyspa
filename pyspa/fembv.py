@@ -271,7 +271,7 @@ def _subspace_update_fembv_Gamma(G, basis_values, A_ub, b_ub, A_eq, b_eq,
     else:
         is_sparse = False
     options = {'disp': verbose > 0, 'maxiter': max_iter,
-               'tol': tol, 'sparse': is_sparse}
+               'tol': tol, 'sparse': is_sparse, 'presolve': True}
     res = linprog(g_vec, A_ub=A_ub, b_ub=b_ub, A_eq=A_eq, b_eq=b_eq,
                   bounds=bounds, method=method, options=options)
 
