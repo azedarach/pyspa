@@ -167,7 +167,10 @@ def _fembv_Gamma_equality_constraints(n_components, V):
 
     b_eq = np.ones((n_samples,))
 
-    return A_eq.tocsr(), b_eq
+    A_csr = A_eq.tocsr()
+    A_csr.eliminate_zeros()
+
+    return A_csr, b_eq
 
 
 def _fembv_Gamma_upper_bound_constraints(n_components, V, max_tv_norm=None):
@@ -215,7 +218,10 @@ def _fembv_Gamma_upper_bound_constraints(n_components, V, max_tv_norm=None):
     A_ub = sps.vstack([A_pos, A_aux, A_bv])
     b_ub = np.concatenate([b_pos, b_aux, b_bv])
 
-    return A_ub, b_ub
+    A_csr = A_ub.tocsr()
+    A_csr.eliminate_zeros()
+
+    return A_csr, b_ub
 
 
 def _subspace_update_fembv_Gamma(G, basis_values, A_ub, b_ub, A_eq, b_eq,
