@@ -11,7 +11,8 @@ from pyspa.fembv import (_fembv_Gamma_equality_constraints,
                          _fembv_binx_cost_hess,
                          _fembv_binx_lambda_vector,
                          _fembv_binx_Theta_bounds,
-                         _fembv_binx_Theta_constraints)
+                         _fembv_binx_Theta_constraints,
+                         fembv_binx)
 
 
 def _piecewise_constant_fem_basis(n_samples, n_elem=None, value=1):
@@ -505,3 +506,22 @@ class TestFEMBVBINX(unittest.TestCase):
             YX, Gamma, Theta, epsilon_Theta=epsilon_Theta)
 
         self.assertTrue(np.allclose(numeric, analytic))
+
+    def test_two_state_independent_outcomes(self):
+        n_samples = 500
+        n_components = 1
+        tol = 1e-6
+
+        Y = _random_binary_sequence(n_samples)
+        print(Y)
+        X = np.zeros((n_samples - 1, 2))
+        X[:, 0][Y[:-1] == 1] = 1
+        X[:, 1][Y[:-1] == 0] = 1
+        Y = Y[1:]
+
+        Gamma, Theta, n_iter = fembv_binx(
+            X, Y, n_components=n_components, tol=tol)
+
+        expected_Theta = np.array([0.5, 0.5])
+
+        self.assertTrue(np.allclose(Theta, expected_Theta, atol=0.05))
