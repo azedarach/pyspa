@@ -810,10 +810,10 @@ def _fembv_binx_regularization_grad(Theta, u=None, epsilon_Theta=0):
 def _fembv_binx_cost_grad(YX, Gamma, Theta, u=None, epsilon_Theta=0):
     return (_fembv_binx_distance_grad(YX, Gamma, Theta, u=u) +
             _fembv_binx_regularization_grad(
-                Theta, epsilon_Theta=epsilon_Theta))
+                Theta, u=u, epsilon_Theta=epsilon_Theta))
 
 
-def _fembv_binx_cost_hess(YX, Gamma, Theta, u=None):
+def _fembv_binx_distance_hess(YX, Gamma, Theta, u=None):
     Y = YX[:, 0]
     X = YX[:, 1:]
 
@@ -867,6 +867,20 @@ def _fembv_binx_cost_hess(YX, Gamma, Theta, u=None):
                     H[col_idx, row_idx] = val
 
     return H
+
+
+def _fembv_binx_regularization_hess(Theta, u=None, epsilon_Theta=0):
+    n_pars = np.size(Theta)
+    if u is None:
+        return np.zeros((n_pars, n_pars))
+    else:
+        return 2 * epsilon_Theta * np.identity(n_pars)
+
+
+def _fembv_binx_cost_hess(YX, Gamma, Theta, u=None, epsilon_Theta=0):
+    return (_fembv_binx_distance_hess(YX, Gamma, Theta, u=u) +
+            _fembv_binx_regularization_hess(
+                Theta, epsilon_Theta=epsilon_Theta))
 
 
 def _fembv_binx_cost(YX, Gamma, Theta, u=None, epsilon_Theta=0):
