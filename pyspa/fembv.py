@@ -439,7 +439,7 @@ def _fit_generic_fembv_subspace(X, Gamma, Theta, distance_matrix, theta_update,
             start_cost = initial_cost
 
         if update_Theta:
-            Theta = theta_update(X, Gamma, theta_update_pars)
+            Theta = theta_update(X, Gamma, Theta, *theta_update_pars)
 
         G = distance_matrix(X, Theta, distance_matrix_pars)
         Gamma, _ = _subspace_update_fembv_Gamma(
@@ -1087,7 +1087,7 @@ def _fembv_binx_Theta_constraints(n_components, n_features, u=None):
     return LinearConstraint(A_bounds, 0, 1)
 
 
-def _fembv_binx_Theta_update(YX, Gamma, Theta, pars, **kwargs):
+def _fembv_binx_Theta_update(YX, Gamma, Theta, *pars, **kwargs):
     u = pars[0]
     epsilon_Theta = pars[1]
     bounds = pars[2]
@@ -1110,20 +1110,22 @@ def _fembv_binx_Theta_update(YX, Gamma, Theta, pars, **kwargs):
 
     def jac(x, *args):
         yx = args[0]
+        gamma = args[1]
         u = args[2]
         epsilon_Theta = args[3]
         theta = np.reshape(x, (n_components, n_pars))
         jac_mat = _fembv_binx_cost_grad(
-            yx, theta, u=u, epsilon_Theta=epsilon_Theta)
+            yx, gamma, theta, u=u, epsilon_Theta=epsilon_Theta)
         return np.ravel(jac_mat)
 
     def hess(x, *args):
         yx = args[0]
+        gamma = args[1]
         u = args[2]
         epsilon_Theta = args[3]
         theta = np.reshape(x, (n_components, n_pars))
         hess_mat = _fembv_binx_cost_hess(
-            yx, theta, u=u, epsilon_Theta=epsilon_Theta)
+            yx, gamma, theta, u=u, epsilon_Theta=epsilon_Theta)
         return hess_mat
 
     res = minimize(f, x0, args=args, jac=jac, hess=hess,
@@ -1176,12 +1178,15 @@ def fembv_binx(X, Y, Gamma=None, Theta=None, u=None, n_components=None,
                 'Number of iterations to checkpoint after must be a '
                 'positive integer; got (checkpoint_iter=%r)' % checkpoint_iter)
 
-    invalid_y_vals = np.any(np.logical_or(Y != 0, Y != 1))
+    invalid_y_vals = np.any(np.logical_and(Y != 0, Y != 1))
     if invalid_y_vals:
         raise ValueError(
             'data matrix Y must be a binary variable (values 0 or 1)')
 
-    yx = np.hstack([np.reshape(Y, (n_samples, 1)), X], axis=-1)
+    if Y.ndim == 1:
+        yx = np.concatenate([np.reshape(Y, (n_samples, 1)), X], axis=-1)
+    else:
+        yx = np.hstack([Y, X])
 
     theta_update_bounds = _fembv_binx_Theta_bounds(
         n_components, n_features, u=u)
