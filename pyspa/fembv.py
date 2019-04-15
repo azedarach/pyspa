@@ -813,7 +813,7 @@ def _fembv_binx_cost_grad(YX, Gamma, Theta, u=None, epsilon_Theta=0):
                 Theta, epsilon_Theta=epsilon_Theta))
 
 
-def _fembv_binx_cost_hess(YX, Theta, u=None):
+def _fembv_binx_cost_hess(YX, Gamma, Theta, u=None):
     Y = YX[:, 0]
     X = YX[:, 1:]
 
@@ -826,10 +826,47 @@ def _fembv_binx_cost_hess(YX, Theta, u=None):
         n_external = u.shape[1]
 
     n_component_pars = n_features * (n_external + 1)
+    n_pars = n_components * n_component_pars
 
     yp = Y[:, np.newaxis] * X
     yp_comp = (1 - Y[:, np.newaxis]) * X
     H = np.zeros((n_pars, n_pars))
+
+    def hp(i, n_features, u=None):
+        if u is None or i == 0:
+            return 1
+        else:
+            return u[:, p]
+
+    yp = Y[:, np.newaxis] * X
+    yp_comp = (1 - Y[:, np.newaxis]) * X
+    for i in range(n_components):
+        lx = _fembv_binx_lambda_vector(i, Theta, u=u)
+        lxdotp = np.sum(lx * X, axis=1)
+        for j in range(n_component_pars):
+            for k in range(j, n_component_pars):
+                p = int(j / n_features)
+                q = int(k / n_features)
+                r = j - p * n_features
+                s = k - q * n_features
+
+                row_idx = j + i * n_component_pars
+                col_idx = k + i * n_component_pars
+
+                coeff = hp(p, n_features, u=u) * hp(q, n_features, u=u)
+                ypp = yp[:, r] * X[:, s]
+                ypp_comp = yp_comp[:, r] * X[:, s]
+                gypp = Gamma[:, i] * ypp
+                gypp_comp = Gamma[:, i] * ypp_comp
+                val = np.sum(
+                    np.divide(coeff * gypp, lxdotp ** 2) +
+                    np.divide(coeff * gypp_comp, (1 - lxdotp) ** 2))
+
+                H[row_idx, col_idx] = val
+                if j != k:
+                    H[col_idx, row_idx] = val
+
+    return H
 
 
 def _fembv_binx_cost(YX, Gamma, Theta, u=None, epsilon_Theta=0):
@@ -862,24 +899,26 @@ def _fembv_binx_Theta_constraints(n_components, n_features, u=None):
             A_constr[i, i * n_features:(i + 1) * n_features] = 1
         return LinearConstraint(A_constr, 0, 1)
 
-    n_external = u.shape[1]
+    n_samples, n_external = u.shape
     n_component_pars = n_features * (n_external + 1)
     n_pars = n_components * n_component_pars
 
-    convex_hull = ConvexHull(u)
-    convex_hull_vertices = u[convex_hull.vertices]
-    n_vertices = convex_hull_vertices.shape
-
+    if n_samples > 2:
+        convex_hull = ConvexHull(u)
+        vertices = u[convex_hull.vertices]
+    else:
+        vertices = u
+    n_vertices = vertices.shape[0]
     n_elem_constraints = n_components * n_features * n_vertices
     A_elem = np.zeros((n_elem_constraints, n_pars))
     for k in range(n_vertices):
-        vertex = convex_hull_vertices[k]
+        vertex = vertices[k]
         for i in range(n_components):
             base_offset = i * n_component_pars
             ext_start = base_offset + n_features
             ext_end = ext_start + n_external * n_features
             for j in range(n_features):
-                idx = j + i * n_component_pars + k * n_pars
+                idx = j + i * n_features + k * n_components * n_features
                 A_elem[idx, j + base_offset] = 1
                 A_elem[idx, j + ext_start:j + ext_end:n_features] = vertex
 
@@ -890,7 +929,7 @@ def _fembv_binx_Theta_constraints(n_components, n_features, u=None):
         A_sum[i, i * n_component_pars:i * n_component_pars + n_features] = 1
 
     for k in range(n_vertices):
-        vertex = convex_hull_vertices[k]
+        vertex = vertices[k]
         for i in range(n_components):
             idx = i + (k + 1) * n_components
             base_offset = i * n_component_pars
