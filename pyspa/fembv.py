@@ -1128,8 +1128,14 @@ def _fembv_binx_Theta_update(YX, Gamma, Theta, *pars, **kwargs):
             yx, gamma, theta, u=u, epsilon_Theta=epsilon_Theta)
         return hess_mat
 
+    if 'method' in kwargs:
+        method = kwargs['method']
+    else:
+        method = 'trust-krylov'
+
     res = minimize(f, x0, args=args, jac=jac, hess=hess,
-                   bounds=bounds, constraints=constraints, **kwargs)
+                   bounds=bounds, constraints=constraints,
+                   method=method, **kwargs)
 
     if not res['success']:
         raise RuntimeError('minimization of FEM-BV-BINX cost function failed')
