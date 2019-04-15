@@ -1112,6 +1112,7 @@ def _fembv_binx_Theta_update(YX, Gamma, Theta, *pars, **kwargs):
     epsilon_Theta = pars[1]
     bounds = pars[2]
     constraints = pars[3]
+    verbose = pars[4]
 
     n_components, n_pars = Theta.shape
 
@@ -1155,7 +1156,8 @@ def _fembv_binx_Theta_update(YX, Gamma, Theta, *pars, **kwargs):
 
     res = minimize(f, x0, args=args, jac=jac, hess=hess,
                    bounds=bounds, constraints=constraints,
-                   method=method, **kwargs)
+                   method=method, options={'disp': verbose > 0},
+                   **kwargs)
 
     if not res['success']:
         raise RuntimeError('minimization of FEM-BV-BINX cost function failed')
@@ -1219,7 +1221,8 @@ def fembv_binx(X, Y, Gamma=None, Theta=None, u=None, n_components=None,
     theta_update_constraints = _fembv_binx_Theta_constraints(
         n_components, n_features, u=u)
     theta_update_pars = (u, epsilon_Theta,
-                         theta_update_bounds, theta_update_constraints)
+                         theta_update_bounds, theta_update_constraints,
+                         verbose)
 
     if init == 'custom' and update_Theta:
         _check_init_fembv_Gamma(Gamma, (n_samples, n_components),
