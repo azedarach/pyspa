@@ -796,10 +796,30 @@ def _initialize_fembv_binx_random(YX, n_components, u=None, random_state=None):
 
     Gamma = _random_affiliations((n_samples, n_components), random_state=rng)
 
+    n_features = YX.shape[1] - 1
     if u is None:
-        n_features = YX.shape[1] - 1
         Theta = _random_affiliations(
             (n_components, n_features), random_state=rng)
+    else:
+        # @todo ensure initial guess is in feasible region
+        if u.ndim == 1:
+            n_external = 1
+        else:
+            n_external = u.shape[1]
+        n_component_pars = n_features * (n_external + 1)
+        Theta = _random_affiliations(
+            (n_components, n_component_pars), random_state=rng)
+
+        # if u.ndim == 1:
+        #     n_external = 1
+        #     vertices = np.array([[np.min(u)], [np.max(u)]])
+        # else:
+        #     n_external = u.shape[1]
+        #     hull = ConvexHull(u)
+        #     vertices = u[hull.vertices]
+
+        # theta_0  = _random_affiliations(
+        #     (n_components, n_features), random_state=rng)
 
     return Gamma, Theta
 
