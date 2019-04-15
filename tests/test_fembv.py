@@ -513,7 +513,6 @@ class TestFEMBVBINX(unittest.TestCase):
         tol = 1e-6
 
         Y = _random_binary_sequence(n_samples)
-        print(Y)
         X = np.zeros((n_samples - 1, 2))
         X[:, 0][Y[:-1] == 1] = 1
         X[:, 1][Y[:-1] == 0] = 1
