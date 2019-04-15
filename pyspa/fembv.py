@@ -1173,7 +1173,12 @@ def fembv_binx(X, Y, Gamma=None, Theta=None, u=None, n_components=None,
                max_tv_norm=None, fem_basis='constant',
                method='interior-point', verbose=0,
                checkpoint=False, checkpoint_file=None, checkpoint_iter=None):
-    n_samples, n_features = X.shape
+    if X.ndim == 1:
+        n_samples = X.shape[0]
+        n_features = 1
+    else:
+        n_samples, n_features = X.shape
+
     if n_components is None:
         n_components = n_features
 
@@ -1211,7 +1216,10 @@ def fembv_binx(X, Y, Gamma=None, Theta=None, u=None, n_components=None,
         raise ValueError(
             'data matrix Y must be a binary variable (values 0 or 1)')
 
-    if Y.ndim == 1:
+    if Y.ndim == 1 and X.ndim == 1:
+        yx = np.hstack([np.reshape(Y, (n_samples, 1)),
+                        np.reshape(X, (n_samples, 1))])
+    elif Y.ndim == 1:
         yx = np.concatenate([np.reshape(Y, (n_samples, 1)), X], axis=-1)
     else:
         yx = np.hstack([Y, X])
