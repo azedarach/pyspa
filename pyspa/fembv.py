@@ -1423,3 +1423,238 @@ class FEMBVKMeans(object):
             verbose=self.verbose)
 
         return Gamma
+
+
+class FEMBVBINX(object):
+    r"""FEM-BV clustering for binary data with external factors.
+
+    The local distance function is given by the negative log-likelihood
+
+        -y_t log(\Theta_i^T P_x(t)) - (1 - y_t) log(1 - \Theta_i^T P_x(t))
+
+    where the binary variable y_t is assumed to take the values 0 or
+    1, P_x is a vector of probabilities at time t for the predictor
+    values x, and \Theta_i is a vector of conditional probabilities
+    for cluster i.
+
+    The total objective function is minimized with an alternating
+    minimization with respect to the cluster probabilities \Theta_i and
+    the affiliations Gamma.
+
+    Parameters
+    ----------
+    n_components : integer or None
+        If an integer, the number of clusters. If None, then all features
+        are kept.
+
+    init : None | 'random' | 'custom'
+        Method used to initialize the algorithm.
+        Default: None
+        Valid options:
+
+        - None: falls back to 'random'
+
+        - 'random': random initialization of the cluster affiliations
+            and probabilities.
+
+        - 'custom': use custom matrices for Gamma and Theta
+
+    solver : 'subspace'
+        Numerical solver to use:
+        'subspace' is the subspace algorithm.
+
+    tol : float, default: 1e-4
+        Tolerance of the stopping condition.
+
+    max_iter : integer, default: 200
+        Maximum number of iterations before stopping.
+
+    random_state : integer, RandomState, or None
+        If an integer, random_state is the seed used by the
+        random number generator. If a RandomState instance,
+        random_state is the random number generator. If
+        None, the random number generator is the
+        RandomState instance used by `np.random`.
+
+    max_tv_norm : None, scalar or array-like, shape (n_components,)
+        If a scalar, a common maximum TV norm for all cluster
+        affiliations. If array-like, the maximum TV norm for
+        each of the separate affiliation sequences. If not given,
+        no upper bound is imposed.
+
+    epsilon_Theta : scalar, default: 0
+        Regularization parameter for probability vectors.
+
+    verbose : integer, default: 0
+        The verbosity level.
+
+    fem_basis : None, string, or callable
+        The choice of finite-element basis functions to use. If given
+        as a string, valid options are:
+
+        - 'constant' : use piecewise constant basis functions
+
+        - 'triangle' : use triangle basis functions with a width of 3
+            grid points
+
+        If given as a callable object, must be callable with the
+        signature fem_basis(n_samples), and should return an
+        array of shape (n_samples, n_elements) where n_elements is
+        the number of finite-element basis functions, containing the
+        values of the basis functions at each grid point. If None,
+        defaults to piecewise constant basis functions.
+
+    Attributes
+    ----------
+    components_ : array-like, shape (n_components, n_features)
+        The cluster parameters.
+
+    cost_ : number
+        Value of the FEM-BV cost function for the obtained fit.
+
+    n_iter_ : integer
+        Actual number of iterations.
+
+    Examples
+    --------
+    import numpy as np
+    Y = np.random.rand(100, 1)
+    Y[Y < 0.5] = 0
+    Y[Y >= 0.5] = 1
+    X = np.random.rand(100, 4)
+    from pyspa.fembv import FEMBVKMeans
+    model = FEMBVBINX(n_components=2, init='random', random_state=0)
+    Gamma = model.fit_transform(X, Y)
+    Theta = model.components_
+
+    References
+    ----------
+    Gerber, S. and Horenko, I., "On Inference of Causality for Discrete
+    State Models in a Multiscale Context", Proceedings of the National
+    Academy of Sciences 111, 41 (2014), 14651 - 14656
+    """
+
+    def __init__(self, n_components, init=None, solver='subspace',
+                 tol=1e-4, max_iter=200, random_state=None,
+                 max_tv_norm=None, epsilon_Theta=0,
+                 verbose=0, fem_basis='constant',
+                 **params):
+        self.n_components = n_components
+        self.init = init
+        self.solver = solver
+        self.tol = tol
+        self.max_iter = max_iter
+        self.random_state = random_state
+        self.max_tv_norm = max_tv_norm
+        self.epsilon_Theta = epsilon_Theta
+        self.verbose = verbose
+        self.fem_basis = fem_basis
+        self.params = params
+
+    def _merge_data(self, X, Y):
+        n_samples = Y.shape[0]
+        if Y.ndim == 1:
+            return np.concatenate([np.reshape(Y, (n_samples, 1)), X], axis=-1)
+        else:
+            return np.hstack([Y, X])
+
+    def fit_transform(self, X, Y, Gamma=None, Theta=None, u=None):
+        """Calculate FEM-BV-BINX fit for data and return affiliations.
+
+        This is more efficient than calling fit followed by transform.
+
+        Parameters
+        ----------
+        X : array-like, shape (n_samples, n_features)
+            Predictors matrix to be fitted.
+
+        Y : array-like, shape (n_samples,)
+            Binary outcome data to be fitted.
+
+        Gamma : array-like, shape (n_samples, n_components)
+            If init='custom', used as initial guess for solution.
+
+        Theta : array-like, shape (n_components, n_features)
+            If init='custom', used as initial guess for solution.
+
+        u : optional, array-like, shape (n_samples, n_exteranl)
+            Array of external factor values.
+
+        Returns
+        -------
+        Gamma : array-like, shape (n_samples, n_components)
+            Affiliation sequence for the data.
+        """
+        Gamma, Theta, n_iter_ = fembv_binx(
+            X, Y, Gamma=Gamma, Theta=Theta, u=u,
+            n_components=self.n_components,
+            init=self.init, update_Theta=True,
+            epsilon_Theta=self.epsilon_Theta,
+            solver=self.solver, tol=self.tol,
+            max_iter=self.max_iter,
+            random_state=self.random_state,
+            max_tv_norm=self.max_tv_norm,
+            fem_basis=self.fem_basis, verbose=self.verbose,
+            **self.params)
+
+        YX = self._merge_data(X, Y)
+
+        self.cost_ = _fembv_binx_cost(
+            YX, Gamma, Theta, u=u, epsilon_Theta=self.epsilon_Theta)
+
+        self.n_components_ = Theta.shape[0]
+        self.components_ = Theta
+        self.n_iter_ = n_iter_
+
+        return Gamma
+
+    def fit(self, X, Y, **params):
+        """Calculate FEM-BV-BINX fit for the predictors X and outcome Y.
+
+        Parameters
+        ----------
+        X : array-like, shape (n_samples, n_features)
+            Predictors matrix to be fitted.
+
+        Y : array-like, shape (n_samples,))
+            Binary outcome data to be fitted.
+
+        Returns
+        -------
+        self
+        """
+        self.fit_transform(X, Y, **params)
+        return self
+
+    def transform(self, X, Y, u=None):
+        """Transform the data according to the fitted model.
+
+        Parameters
+        ----------
+        X : array-like, shape (n_samples, n_features)
+            Predictors matrix to compute representation for.
+
+        Y : array-like, shape (n_samples,)
+            Binary outcome data to compute representation for.
+
+        u : optional, array-like, shape (n_samples, n_external)
+            Array of external factor values.
+
+        Returns
+        -------
+        Gamma : array-like, shape (n_samples, n_components)
+            Affiliation sequence for the data.
+        """
+        check_is_fitted(self, 'n_components_')
+
+        Gamma, _, n_iter_ = fembv_binx(
+            X=X, Y=Y, Gamma=None, Theta=self.components_, u=u,
+            n_components=self.n_components,
+            init=self.init, update_Theta=True,
+            epsilon_Theta=self.epsilon_Theta,
+            solver=self.solver, tol=self.tol,
+            max_iter=self.max_iter,
+            max_tv_norm=self.max_tv_norm,
+            fem_basis=self.fem_basis, verbose=self.verbose)
+
+        return Gamma
