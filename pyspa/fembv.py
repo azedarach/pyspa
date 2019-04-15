@@ -16,6 +16,7 @@ from sklearn.utils.validation import check_is_fitted
 INTEGER_TYPES = (numbers.Integral, np.integer)
 
 FEMBV_KMEANS_INITIALIZATION_METHODS = (None, 'random', 'kmeans')
+FEMBV_BINX_INITIALIZATION_METHODS = (None, 'random')
 
 
 class PiecewiseConstantFEMBasis(object):
@@ -733,6 +734,133 @@ def _fembv_binx_lambda_vector(i, Theta, u=None):
         return lam
 
 
+def _check_init_fembv_binx_Theta(Theta, shape, whom, u=None):
+    Theta = check_array(Theta)
+    _check_array_shape(Theta, shape, whom)
+
+    if u is not None:
+        n_components = Theta.shape[0]
+        for i in range(n_components):
+            lx = _fembv_binx_lambda_vector(i, Theta, u=u)
+            row_sums = np.sum(lx, axis=1)
+            if np.any(np.logical_or(row_sums < 0, row_sums > 1)):
+                warnings.warn(
+                    'sum of transition probabilities passed to %s '
+                    'is not between 0 and 1 for cluster %d' %
+                    (whom, i), warnings.UserWarning)
+            if np.any(np.logical_or(lx < 0, lx > 1)):
+                warnings.warn(
+                    'transition probabilities passed to %s '
+                    'do not lie between 0 and 1 for cluster %d' %
+                    (whom, i), warnings.UserWarning)
+
+
+def _initialize_fembv_binx_random(YX, n_components, u=None, random_state=None):
+    """Return random initial affiliations and cluster parameters.
+
+    The affiliations matrix is first initialized with uniformly distributed
+    random numbers on [0, 1), before the normalization requirement is imposed.
+
+    If no external factors are given, the cluster parameters Theta are
+    chosen to be uniformly distributed numbers on [0, 1) subject to the
+    constraint that each row sums to unity.
+
+    Parameters
+    ----------
+    YX : array-like, shape (n_samples, n_features + 1)
+        The merged data matrix to be fitted
+
+    n_components : integer
+        The number of clusters desired
+
+    u : optional, array-like, shape (n_samples, n_external)
+        External factors to be used in fitting the data.
+
+    random_state : integer, RandomState or None
+        If an integer, random_state is the seed used by the
+        random number generator. If a RandomState instance,
+        random_state is the random number generator. If None,
+        the random number generator is the RandomState instance
+        used by `np.random`.
+
+    Returns
+    -------
+    Gamma : array-like, shape (n_samples, n_components)
+        Random initial guess for affiliations
+
+    Theta : array-like, shape (n_components, n_features)
+        Random initial guess for cluster centroids
+    """
+    n_samples = YX.shape[0]
+    rng = check_random_state(random_state)
+
+    Gamma = _random_affiliations((n_samples, n_components), random_state=rng)
+
+    if u is None:
+        n_features = YX.shape[1] - 1
+        Theta = _random_affiliations(
+            (n_components, n_features), random_state=rng)
+
+    return Gamma, Theta
+
+
+def _initialize_fembv_binx(YX, n_components, init='random',
+                           u=None, random_state=None):
+    """Return initial guesses for affiliations and cluster parameters.
+
+    Initial values for the affiliations Gamma and cluster parameters Theta
+    are calculated using the given initialization method.
+
+    Note that the provided data matrix is assumed to contain as its first
+    column the binary outcome variable,  YX = [Y, X]
+
+    Parameters
+    ----------
+    YX : array-like, shape (n_samples, n_features + 1)
+        The merged data matrix to be fitted.
+
+    n_components : integer
+        The number of clusters.
+
+    init : None | 'random'
+        Method used for initialization.
+        Default: 'random'
+        Valid options:
+
+        - None: falls back to 'random'.
+
+        - 'random': random initialization of the cluster affiliations
+            and centroids.
+
+    u : optional, array-like, shape (n_samples, n_external)
+        External factors to be used in fitting the data.
+
+    random_state : integer, RandomState or None
+        If an integer, random_state is the seed used by the random number
+        generator. If a RandomState instance, random_state is the
+        random number generator. If None, the random number generator is
+        the RandomState instance used by `np.random`.
+
+    Returns
+    -------
+    Gamma : array-like, shape (n_samples, n_components)
+        Initial guess for affiliations
+
+    Theta : array-like, shape (n_components, n_features)
+        Initial guess for cluster parameters
+    """
+    if init is None:
+        init = 'random'
+
+    if init == 'random':
+        return _initialize_fembv_binx_random(
+            YX, n_components, u=u, random_state=random_state)
+    else:
+        raise ValueError(
+            'Invalid init parameter: got %r instead of one of %r' %
+            (init, FEMBV_BINX_INITIALIZATION_METHODS))
+
+
 def _fembv_binx_distance_matrix(YX, Theta, u=None):
     Y = YX[:, 0]
     X = YX[:, 1:]
@@ -994,7 +1122,8 @@ def _fembv_binx_Theta_update(YX, Gamma, Theta, pars, **kwargs):
         u = args[2]
         epsilon_Theta = args[3]
         theta = np.reshape(x, (n_components, n_pars))
-        hess_mat = _fembv_binx_cost_hess(yx, theta, u=u)
+        hess_mat = _fembv_binx_cost_hess(
+            yx, theta, u=u, epsilon_Theta=epsilon_Theta)
         return hess_mat
 
     res = minimize(f, x0, args=args, jac=jac, hess=hess,
@@ -1009,13 +1138,22 @@ def _fembv_binx_Theta_update(YX, Gamma, Theta, pars, **kwargs):
 
 
 def fembv_binx(X, Y, Gamma=None, Theta=None, u=None, n_components=None,
-               init=None, update_Theta=True, epsilon_Theta=0, solver='subspace',
-               tol=1e-4, max_iter=200, random_state=None, max_tv_norm=None,
-               fem_basis='constant', method='interior-point', verbose=0,
+               init=None, update_Theta=True, epsilon_Theta=0,
+               solver='subspace', tol=1e-4, max_iter=200, random_state=None,
+               max_tv_norm=None, fem_basis='constant',
+               method='interior-point', verbose=0,
                checkpoint=False, checkpoint_file=None, checkpoint_iter=None):
     n_samples, n_features = X.shape
     if n_components is None:
         n_components = n_features
+
+    if u is None:
+        n_component_pars = n_features
+    else:
+        if u.ndim == 1:
+            n_component_pars = 2 * n_features
+        else:
+            n_component_pars = n_features * (1 + u.shape[1])
 
     if not isinstance(n_components, INTEGER_TYPES) or n_components <= 0:
         raise ValueError('Number of components must be a positive integer;'
@@ -1056,15 +1194,17 @@ def fembv_binx(X, Y, Gamma=None, Theta=None, u=None, n_components=None,
         _check_init_fembv_Gamma(Gamma, (n_samples, n_components),
                                 'FEM-BV-BINX (input Gamma)')
         _check_init_fembv_binx_Theta(
-            Theta, (n_components, n_features), 'FEM-BV-BINX (input Theta)')
+            Theta, (n_components, n_component_pars),
+            'FEM-BV-BINX (input Theta)', u=u)
     elif not update_Theta:
-        _check_init_fembv_binx_Theta(Theta, (n_components, n_features),
-                                     'FEM-BV-BINX (input Theta)')
+        _check_init_fembv_binx_Theta(
+            Theta, (n_components, n_component_pars),
+            'FEM-BV-BINX (input Theta)', u=u)
         Gamma, _ = _initialize_fembv_binx(yx, n_components, init=init,
-                                          random_state=random_state)
+                                          u=u, random_state=random_state)
     else:
         Gamma, Theta = _initialize_fembv_binx(yx, n_components, init=init,
-                                              random_state=random_state)
+                                              u=u, random_state=random_state)
 
     if solver == 'subspace':
         Gamma, Theta, n_iter = _fit_generic_fembv_subspace(
