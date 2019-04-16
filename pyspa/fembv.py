@@ -1153,11 +1153,17 @@ def _fembv_binx_Theta_update(YX, Gamma, Theta, *pars, **kwargs):
     if 'method' in kwargs:
         method = kwargs['method']
     else:
-        method = 'trust-krylov'
+        method = 'slsqp'
+
+    options = {'disp': verbose > 0}
+    if 'max_iter' in kwargs:
+        options['maxiter'] = kwargs['max_iter']
+    else:
+        options['maxiter'] = 500
 
     res = minimize(f, x0, args=args, jac=jac, hess=hess,
                    bounds=bounds, constraints=constraints,
-                   method=method, options={'disp': verbose > 0},
+                   method=method, options=options,
                    **kwargs)
 
     if not res['success']:
