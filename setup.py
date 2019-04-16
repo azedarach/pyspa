@@ -13,5 +13,6 @@ setup(name='pyspa',
           'joblib>=0.13.2',
           'numpy>=1.16.2',
           'scipy>=1.2.1',
-          'scikit-learn>=0.20.3']
+          'scikit-learn>=0.20.3'],
+      test_suite='tests'
       )
