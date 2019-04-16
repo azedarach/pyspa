@@ -1555,6 +1555,9 @@ class FEMBVBINX(object):
     cost_ : number
         Value of the FEM-BV cost function for the obtained fit.
 
+    log_likelihood_bound_ : number
+        Value of the FEM-BV lower-bound on the log likelihood.
+
     n_iter_ : integer
         Actual number of iterations.
 
@@ -1644,6 +1647,8 @@ class FEMBVBINX(object):
 
         self.cost_ = _fembv_binx_cost(
             YX, Gamma, Theta, u=u, epsilon_Theta=self.epsilon_Theta)
+        self.log_likelihood_bound_ = -_fembv_binx_cost(
+            YX, Gamma, Theta, u=u, epsilon_Theta=0)
 
         self.n_components_ = Theta.shape[0]
         self.components_ = Theta
