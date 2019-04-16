@@ -763,7 +763,8 @@ def _initialize_fembv_binx_random(YX, n_components, u=None, random_state=None):
 
     If no external factors are given, the cluster parameters Theta are
     chosen to be uniformly distributed numbers on [0, 1) subject to the
-    constraint that each row sums to unity.
+    constraint that each row sums to 0.5, corresponding to the initial
+    guess P(y_t = 1) <= 0.5.
 
     Parameters
     ----------
@@ -798,7 +799,7 @@ def _initialize_fembv_binx_random(YX, n_components, u=None, random_state=None):
 
     n_features = YX.shape[1] - 1
     if u is None:
-        Theta = _random_affiliations(
+        Theta = 0.5 * _random_affiliations(
             (n_components, n_features), random_state=rng)
     else:
         # @todo ensure initial guess is in feasible region
@@ -807,7 +808,7 @@ def _initialize_fembv_binx_random(YX, n_components, u=None, random_state=None):
         else:
             n_external = u.shape[1]
         n_component_pars = n_features * (n_external + 1)
-        Theta = _random_affiliations(
+        Theta = 0.5 * _random_affiliations(
             (n_components, n_component_pars), random_state=rng)
 
         # if u.ndim == 1:
