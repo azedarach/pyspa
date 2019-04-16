@@ -1599,7 +1599,10 @@ class FEMBVBINX(object):
 
     def _merge_data(self, X, Y):
         n_samples = Y.shape[0]
-        if Y.ndim == 1:
+        if Y.ndim == 1 and X.ndim == 1:
+            return np.hstack([np.reshape(Y, (n_samples, 1)),
+                              np.reshape(X, (n_samples, 1))])
+        elif Y.ndim == 1:
             return np.concatenate([np.reshape(Y, (n_samples, 1)), X], axis=-1)
         else:
             return np.hstack([Y, X])
