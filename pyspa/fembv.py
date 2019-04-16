@@ -298,8 +298,8 @@ def _subspace_update_fembv_Gamma(G, basis_values, A_ub, b_ub, A_eq, b_eq,
 
 
 def _fit_generic_fembv_subspace(X, Gamma, Theta, distance_matrix, theta_update,
-                                distance_matrix_pars=None,
-                                theta_update_pars=None,
+                                distance_matrix_pars=(),
+                                theta_update_pars=(),
                                 max_tv_norm=None,
                                 epsilon_Theta=0, regularization_Theta=None,
                                 tol=1e-4, max_iter=200, fem_basis='constant',
@@ -688,7 +688,6 @@ def fembv_kmeans(X, Gamma=None, Theta=None, n_components=None,
         Gamma, Theta, n_iter = _fit_generic_fembv_subspace(
             X, Gamma, Theta, _fembv_kmeans_distance_matrix,
             _fembv_kmeans_Theta_update,
-            theta_update_pars=None, distance_matrix_pars=None,
             epsilon_Theta=0, regularization_Theta=None,
             tol=tol, max_iter=max_iter, update_Theta=update_Theta,
             max_tv_norm=max_tv_norm, fem_basis=fem_basis,
