@@ -5,14 +5,14 @@ import numpy as np
 from scipy.optimize import Bounds, LinearConstraint, linprog, minimize
 from scipy.spatial import ConvexHull
 
-from pyspa.fembv import (_fembv_Gamma_equality_constraints,
-                         _fembv_Gamma_upper_bound_constraints,
-                         _fembv_binx_cost, _fembv_binx_cost_grad,
-                         _fembv_binx_cost_hess,
-                         _fembv_binx_lambda_vector,
-                         _fembv_binx_Theta_bounds,
-                         _fembv_binx_Theta_constraints,
-                         fembv_binx)
+from pyspa import fembv_binx
+from pyspa._fembv_binx import (_fembv_binx_cost, _fembv_binx_cost_grad,
+                               _fembv_binx_cost_hess,
+                               _fembv_binx_lambda_vector,
+                               _fembv_binx_Theta_bounds,
+                               _fembv_binx_Theta_constraints)
+from pyspa._fembv_generic import (_fembv_Gamma_equality_constraints,
+                                  _fembv_Gamma_upper_bound_constraints)
 
 
 def _piecewise_constant_fem_basis(n_samples, n_elem=None, value=1):

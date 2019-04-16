@@ -12,6 +12,7 @@ from sklearn.utils.validation import check_is_fitted
 
 from .constraints import simplex_projection
 from .optimizers import solve_qp
+from .utils import right_stochastic_matrix
 
 INTEGER_TYPES = (numbers.Integral, np.integer)
 
@@ -57,17 +58,6 @@ def _check_init_Gamma(Gamma, shape, whom):
 def _check_init_S(S, shape, whom):
     S = check_array(S)
     _check_array_shape(S, shape, whom)
-
-
-def _random_affiliations(shape, random_state=None):
-    """Return random matrix with unit row sums."""
-    rng = check_random_state(random_state)
-
-    Gamma = rng.uniform(size=shape)
-    row_sums = np.sum(Gamma, axis=1)
-    Gamma = Gamma / row_sums[:, np.newaxis]
-
-    return Gamma
 
 
 def _euclidean_spa_dist(X, Gamma, S, normalize=True):
@@ -212,7 +202,7 @@ def _initialize_euclidean_spa_random(X, n_components, random_state=None):
     rng = check_random_state(random_state)
 
     S = avg * rng.randn(n_components, n_features)
-    Gamma = _random_affiliations(
+    Gamma = right_stochastic_matrix(
         (n_samples, n_components), random_state=random_state)
 
     return Gamma, S
@@ -581,7 +571,7 @@ def euclidean_spa(X, Gamma=None, S=None, n_components=None,
     elif not update_S:
         _check_init_S(S, (n_components, n_features),
                       'Euclidean SPA (input S)')
-        Gamma = _random_affiliations(
+        Gamma = right_stochastic_matrix(
             (n_samples, n_components), random_state=random_state)
     else:
         Gamma, S = _initialize_euclidean_spa(
