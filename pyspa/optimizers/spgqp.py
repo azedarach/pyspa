@@ -1,5 +1,6 @@
 import numpy as np
 
+
 # assumes QP problem of form q^T.x + (1/2) x^T.P.x
 # where x is required to lie in a d-dimensional simplex
 # and x0 is a d-dimensional vector
@@ -23,7 +24,7 @@ def spgqp(p, q, x0, projector=None,
         raise ValueError("maximum number of iterations must be at least one")
 
     xk = projector(x0)
-    gk = p @ xk + q
+    gk = np.dot(p, xk) + q
     fk = 0.5 * xk.dot(gk + q)
 
     dinf = projector(xk - gk) - xk
@@ -38,7 +39,7 @@ def spgqp(p, q, x0, projector=None,
     iterations = 0
     while not converged and iterations < max_iterations:
         dk = projector(xk - alpha_k * gk) - xk
-        pdk = p @ dk
+        pdk = np.dot(p, dk)
         dkdk = dk.dot(dk)
         dkpdk = dk.dot(pdk)
         dkgk = dk.dot(gk)
@@ -49,8 +50,8 @@ def spgqp(p, q, x0, projector=None,
         f_max = np.max(f_prev)
         xi = (f_max - fk) / dkpdk
         beta_bar = -dkgk / dkpdk
-        beta_hat = gamma * beta_bar + np.sqrt(gamma ** 2 * beta_bar ** 2
-                                              + 2 * xi)
+        beta_hat = gamma * beta_bar + np.sqrt(
+            gamma ** 2 * beta_bar ** 2 + 2 * xi)
         beta_k = min(sigma, beta_hat)
 
         xk = xk + beta_k * dk
