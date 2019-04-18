@@ -356,7 +356,7 @@ def _fembv_binx_cost(YX, Gamma, Theta, u=None, epsilon_Theta=0):
 
 def _fembv_binx_Theta_bounds(n_components, n_features, u=None):
     if u is None:
-        return Bounds(0, 1)
+        return Bounds(0, 1, keep_feasible=True)
 
     n_external = u.shape[1]
     n_component_pars = n_features * (n_external + 1)
@@ -366,16 +366,18 @@ def _fembv_binx_Theta_bounds(n_components, n_features, u=None):
     for i in range(n_components):
         lb[i * n_component_pars:i * n_component_pars + n_features] = 0
         ub[i * n_component_pars:i * n_component_pars + n_features] = 1
-    return Bounds(lb, ub)
+    return Bounds(lb, ub, keep_feasible=True)
 
 
 def _fembv_binx_Theta_constraints(n_components, n_features, u=None):
     if u is None:
         n_pars = n_components * n_features
-        A_constr = np.zeros((n_components, n_pars))
+        A_elem = np.identity(n_pars)
+        A_sum = np.zeros((n_components, n_pars))
         for i in range(n_components):
-            A_constr[i, i * n_features:(i + 1) * n_features] = 1
-        return LinearConstraint(A_constr, 0, 1)
+            A_sum[i, i * n_features:(i + 1) * n_features] = 1
+        A_constr = np.vstack([A_elem, A_sum])
+        return LinearConstraint(A_constr, 0, 1, keep_feasible=True)
 
     n_samples, n_external = u.shape
     n_component_pars = n_features * (n_external + 1)
@@ -420,7 +422,7 @@ def _fembv_binx_Theta_constraints(n_components, n_features, u=None):
 
     A_bounds = np.vstack([A_elem, A_sum])
 
-    return LinearConstraint(A_bounds, 0, 1)
+    return LinearConstraint(A_bounds, 0, 1, keep_feasible=True)
 
 
 def _fembv_binx_Theta_update(YX, Gamma, Theta, *pars, **kwargs):
