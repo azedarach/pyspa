@@ -197,6 +197,21 @@ def _initialize_fembv_binx(YX, n_components, init='random',
             (init, FEMBV_BINX_INITIALIZATION_METHODS))
 
 
+def _sanitize_probability(p, max_violation=1e-5):
+    if p >= 0 and p <= 1:
+        return p
+
+    violation = np.abs(p) if p < 0 else p - 1
+    if violation > max_violation:
+        # do not attempt to guard against
+        return p
+
+    if p < 0:
+        return 0
+    else:
+        return 1
+
+
 def _fembv_binx_distance_matrix(YX, Theta, u=None):
     Y = YX[:, 0]
     X = YX[:, 1:]
@@ -211,7 +226,13 @@ def _fembv_binx_distance_matrix(YX, Theta, u=None):
                 lam = _fembv_binx_lambda_vector(j, Theta)
             else:
                 lam = _fembv_binx_lambda_vector(j, Theta, u=u[i, :])
-            lxp = np.dot(lam, X[i, :])
+            lxp = _sanitize_probability(np.dot(lam, X[i, :]))
+            if lxp < 0 or lxp > 1:
+                print('lxp = ', lxp)
+                print('lxp - 1 = %14.8e' % (lxp - 1))
+                print('Theta = ', Theta)
+                print('row_sums = ', np.sum(Theta, axis=1))
+                print('dist = ', -((1 - Y[i]) * np.log(1 - lxp) + Y[i] * np.log(lxp)))
             G[i, j] = -((1 - Y[i]) * np.log(1 - lxp) + Y[i] * np.log(lxp))
 
     return G
@@ -219,6 +240,7 @@ def _fembv_binx_distance_matrix(YX, Theta, u=None):
 
 def _fembv_binx_Theta_regularization(Theta, u=None, epsilon_Theta=0, *pars):
     if u is None:
+        print('reg = ', np.sum(Theta))
         return np.sum(Theta)
     else:
         return np.sum(Theta ** 2)
@@ -431,9 +453,11 @@ def _fembv_binx_Theta_update(YX, Gamma, Theta, *pars, **kwargs):
     bounds = pars[2]
     constraints = pars[3]
     verbose = pars[4]
+    tol = pars[5]
 
     n_components, n_pars = Theta.shape
 
+    row_sums = np.sum(Theta, axis=1)
     x0 = np.ravel(Theta)
 
     args = (YX, Gamma, u, epsilon_Theta)
@@ -470,21 +494,25 @@ def _fembv_binx_Theta_update(YX, Gamma, Theta, *pars, **kwargs):
     if 'method' in kwargs:
         method = kwargs['method']
     else:
-        method = 'slsqp'
+        method = 'slsqp' #'trust-constr'
 
-    options = {'disp': verbose > 0}
+    options = {'disp': verbose > 0,}
     if 'max_iter' in kwargs:
         options['maxiter'] = kwargs['max_iter']
     else:
-        options['maxiter'] = 500
+        options['maxiter'] = 10000
 
     res = minimize(f, x0, args=args, jac=jac, hess=hess,
                    bounds=bounds, constraints=constraints,
-                   method=method, options=options,
+                   method=method, tol=tol, options=options,
                    **kwargs)
+    print('res = ', res)
 
     if not res['success']:
-        raise RuntimeError('minimization of FEM-BV-BINX cost function failed')
+        print('minimization of FEM-BV-BINX cost function failed')
+        warnings.warn(
+            'minimization of FEM-BV-BINX cost function failed', UserWarning)
+#        raise RuntimeError('minimization of FEM-BV-BINX cost function failed')
 
     sol = res['x']
 
@@ -548,13 +576,15 @@ def fembv_binx(X, Y, Gamma=None, Theta=None, u=None, n_components=None,
     else:
         yx = np.hstack([Y, X])
 
+    np.savetxt('test.csv', yx, delimiter=',')
+
     theta_update_bounds = _fembv_binx_Theta_bounds(
         n_components, n_features, u=u)
     theta_update_constraints = _fembv_binx_Theta_constraints(
         n_components, n_features, u=u)
     theta_update_pars = (u, epsilon_Theta,
                          theta_update_bounds, theta_update_constraints,
-                         verbose)
+                         verbose, tol)
 
     if init == 'custom' and update_Theta:
         _check_init_fembv_Gamma(Gamma, (n_samples, n_components),
@@ -695,7 +725,7 @@ class FEMBVBINX(object):
     Y[Y < 0.5] = 0
     Y[Y >= 0.5] = 1
     X = np.random.rand(100, 4)
-    from pyspa.fembv import FEMBVKMeans
+    from pyspa.fembv import FEMBVBINX
     model = FEMBVBINX(n_components=2, init='random', random_state=0)
     Gamma = model.fit_transform(X, Y)
     Theta = model.components_
@@ -753,7 +783,7 @@ class FEMBVBINX(object):
         Theta : array-like, shape (n_components, n_features)
             If init='custom', used as initial guess for solution.
 
-        u : optional, array-like, shape (n_samples, n_exteranl)
+        u : optional, array-like, shape (n_samples, n_external)
             Array of external factor values.
 
         Returns
@@ -827,7 +857,7 @@ class FEMBVBINX(object):
 
         Gamma, _, n_iter_ = fembv_binx(
             X=X, Y=Y, Gamma=None, Theta=self.components_, u=u,
-            n_components=self.n_components,
+            n_components=self.n_components_,
             init=self.init, update_Theta=True,
             epsilon_Theta=self.epsilon_Theta,
             solver=self.solver, tol=self.tol,
