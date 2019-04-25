@@ -211,17 +211,23 @@ def _fembv_varx_cost(X, Gamma, Theta, u=None):
         distance_matrix_pars=u)
 
 
-def _fembv_varx_Sigma_estimate(X, gamma, theta, u=None):
-    m = theta['memory']
-    normalization = np.sum(gamma[m:])
+def _fembv_varx_Sigma_estimate(X, Gamma, Theta, u=None):
+    n_features = X.shape[1]
+    n_components = Gamma.shape[1]
 
-    r = _fembv_varx_residuals(X, theta, u=u)
-    r_hat = (np.sum(gamma[m:, np.newaxis] * r, axis=0) /
-             normalization)
-    r_shift = (r - r_hat[np.newaxis, :]) * np.sqrt(gamma[m:, np.newaxis])
+    normalizations = np.sum(Gamma, axis=0)
 
-    return (np.dot(np.transpose(r_shift), r_shift) /
-            (normalization - 1))
+    residuals = _fembv_varx_residuals(X, Theta, u=u)
+    res_means = np.mean(residuals, axis=1)
+    res_shift = residuals - res_means[:, np.newaxis, :]
+
+    Sigma = np.empty((n_components, n_features, n_features))
+    for i in range(n_components):
+        weighted_res = res_shift[i] * np.sqrt(Gamma[:, i][:, np.newaxis])
+        Sigma[i] = (np.dot(np.transpose(weighted_res), weighted_res) /
+                    (normalizations[i] - 1))
+
+    return Sigma
 
 
 def _fembv_varx_Theta_update(X, Gamma, Theta, *pars):
@@ -236,25 +242,28 @@ def _fembv_varx_Theta_update(X, Gamma, Theta, *pars):
         n_external = u.shape[1]
 
     max_memory = _fembv_varx_max_memory(Theta)
+    n_terms = n_samples - max_memory
+
     Wl = [np.zeros((1 + n_features * Theta[k]['memory'] + n_external,
                     n_features)) for k in range(n_components)]
     Zl = [np.zeros((1 + n_features * Theta[k]['memory'] + n_external,
                     1 + n_features * Theta[k]['memory'] + n_external))
           for k in range(n_components)]
 
-    for i in range(max_memory, n_samples):
-        y = X[i]
+    for i in range(n_terms):
+        t = i + max_memory
+        y = X[t]
         x_lag = np.ones(1 + n_features * max_memory + n_external)
         for j in range(max_memory):
-            x_lag[j * n_features:(j + 1) * n_features] = X[i - j - 1]
+            x_lag[j * n_features:(j + 1) * n_features] = X[t - max_memory + j]
         if u is not None:
-            x_lag[max_memory * n_features + 1:] = u[i]
+            x_lag[max_memory * n_features + 1:] = u[t]
 
         for k in range(n_components):
             m = Theta[k]['memory']
-            xy = np.kron(x_lag[(max_memory - m) * n_features:], y)
-            xx = np.kron(x_lag[(max_memory - m) * n_features:],
-                         x_lag[(max_memory - m) * n_features])
+            xy = np.outer(x_lag[(max_memory - m) * n_features:], y)
+            xx = np.outer(x_lag[(max_memory - m) * n_features:],
+                          x_lag[(max_memory - m) * n_features:])
             Wl[k] += Gamma[i, k] * xy
             Zl[k] += Gamma[i, k] * xx
 
@@ -267,8 +276,9 @@ def _fembv_varx_Theta_update(X, Gamma, Theta, *pars):
         if u is not None:
             Theta[k]['Bt'] = sol[m * n_features + 1:]
 
-        Theta[k]['Sigma'] = _fembv_varx_Sigma_estimate(
-            X, Gamma[:, k], Theta[k], u=u)
+    sigma_est = _fembv_varx_Sigma_estimate(X, Gamma, Theta, u=u)
+    for i in range(n_components):
+        Theta[i]['Sigma'] = sigma_est[i]
 
     return Theta
 

@@ -16,7 +16,7 @@ from pyspa._fembv_binx import (_fembv_binx_cost, _fembv_binx_cost_grad,
                                _fembv_binx_Theta_update)
 from pyspa._fembv_generic import (_fembv_Gamma_equality_constraints,
                                   _fembv_Gamma_upper_bound_constraints)
-from pyspa._fembv_varx import (_fembv_varx_cost)
+from pyspa._fembv_varx import (_fembv_varx_cost, _fembv_varx_Theta_update)
 
 
 def _piecewise_constant_fem_basis(n_samples, n_elem=None, value=1):
@@ -576,6 +576,92 @@ def _ref_fembv_varx_cost(X, Gamma, mu, A=None, B=None, u=None):
     return cost
 
 
+def _fembv_varx_pars_to_vec(mu, A=None, B=None):
+    x = np.concatenate(mu)
+    if A is not None:
+        A_vecs = [np.reshape(a, np.size(a)) for a in A if a is not None]
+        x = np.concatenate([x] + A_vecs)
+
+    if B is not None:
+        B_vecs = [np.reshape(b, np.size(b)) for b in B]
+        x = np.concatenate([x] + B_vecs)
+
+    return x
+
+
+def _fembv_varx_vec_to_pars(x, n_components, n_features, memory=0, u=None):
+    n_pars = np.size(x)
+
+    if np.isscalar(memory):
+        memory = np.full((n_components,), memory, dtype='i8')
+    else:
+        memory = np.asarray(memory, dtype='i8')
+
+    mu_vec = x[:n_components * n_features]
+    mu = [mu_vec[i * n_features:(i + 1) * n_features]
+          for i in range(n_components)]
+
+    A = None
+    if n_pars > n_components * n_features:
+        offset = n_components * n_features
+        A = [None] * n_components
+        for i in range(n_components):
+            if memory[i] > 0:
+                n_A_pars = memory[i] * n_features * n_features
+                A[i] = np.reshape(x[offset:offset + n_A_pars],
+                                  (memory[i], n_features, n_features))
+                offset += n_A_pars
+
+    B = None
+    if u is not None:
+        n_external = u.shape[1]
+        n_ext_pars = n_features * n_external
+        B = [np.reshape(x[offset + i * n_ext_pars:
+                          offset + (i + 1) * n_ext_pars],
+                        (n_features, n_external))
+             for i in range(n_components)]
+
+    return mu, A, B
+
+
+def _fembv_varx_theta_solution(X, Gamma, mu, A=None, B=None, u=None):
+    def objective(x, *args):
+        data = args[0]
+        gamma = args[1]
+        ext = args[2]
+        memory = args[3]
+
+        n_features = data.shape[1]
+        n_components = gamma.shape[1]
+
+        mu, A, B = _fembv_varx_vec_to_pars(x, n_components, n_features,
+                                           memory=memory, u=ext)
+
+        return _ref_fembv_varx_cost(data, gamma, mu, A=A, B=B, u=ext)
+
+    n_features = X.shape[1]
+    n_components = Gamma.shape[1]
+    memory = 0
+    if A is not None:
+        memory = [a.shape[0] if a is not None else 0 for a in A]
+    x0 = _fembv_varx_pars_to_vec(mu, A=A, B=B)
+    args = (X, Gamma, u, memory)
+
+    res = minimize(objective, x0, args=args)
+
+    if not res['success']:
+        raise RuntimeError('failed to solve for VARX model parameters')
+
+    mu_sol, A_sol, B_sol = _fembv_varx_vec_to_pars(
+        res['x'], n_components, n_features, memory=memory, u=u)
+
+    return {'mu': mu_sol, 'A': A_sol, 'B': B_sol}
+
+
+def _weighted_mean(X, weights):
+    return np.sum(weights[:, np.newaxis] * X, axis=0) / np.sum(weights)
+
+
 class TestFEMBVVARX(unittest.TestCase):
 
     def test_varx_cost_no_u_no_memory(self):
@@ -766,3 +852,268 @@ class TestFEMBVVARX(unittest.TestCase):
 
         tol = 1e-9
         self.assertTrue(np.abs(cost - expected_cost) < tol)
+
+    def test_varx_theta_update_no_u_no_memory(self):
+        rng = np.random.RandomState(seed=0)
+
+        n_samples = 100
+        n_features = 4
+        n_components = 3
+        memory = 0
+        max_memory = np.max(memory)
+        n_terms = n_samples - max_memory
+
+        X = rng.rand(n_samples, n_features)
+        Gamma = _random_affiliations(
+            n_terms, n_components, random_state=rng)
+
+        mu = [rng.uniform(size=(n_features,))
+              for i in range(n_components)]
+
+        Theta = [{'mu': mu[i], 'memory': memory,
+                  'At': None, 'Bt': None,
+                  'Sigma': np.identity(n_features)}
+                 for i in range(n_components)]
+
+        Theta_sol = _fembv_varx_Theta_update(X, Gamma, Theta, None)
+        numerical_sol = _fembv_varx_theta_solution(X, Gamma, mu)
+        analytic_sol = {'mu': [_weighted_mean(X[max_memory:], Gamma[:, i])
+                               for i in range(n_components)],
+                        'A': None, 'B': None}
+
+        for j in range(n_components):
+            self.assertTrue(np.allclose(numerical_sol['mu'][j],
+                                        analytic_sol['mu'][j]))
+            self.assertTrue(np.allclose(numerical_sol['mu'][j],
+                                        Theta_sol[j]['mu']))
+
+    def test_varx_theta_update_no_u_uniform_memory(self):
+        rng = np.random.RandomState(seed=0)
+
+        n_samples = 200
+        n_features = 3
+        n_components = 2
+        memory = 2
+        max_memory = np.max(memory)
+        n_terms = n_samples - max_memory
+
+        X = rng.rand(n_samples, n_features)
+        Gamma = _random_affiliations(
+            n_terms, n_components, random_state=rng)
+
+        mu = [rng.uniform(size=(n_features,))
+              for i in range(n_components)]
+        A = [rng.uniform(size=(memory, n_features, n_features))
+             for i in range(n_components)]
+
+        Theta = [{'mu': mu[i], 'memory': memory,
+                  'At': np.vstack([np.transpose(A[i][j])
+                                   for j in range(memory - 1, -1, -1)]),
+                  'Bt': None,
+                  'Sigma': np.identity(n_features)}
+                 for i in range(n_components)]
+
+        Theta_sol = _fembv_varx_Theta_update(X, Gamma, Theta, None)
+        numerical_sol = _fembv_varx_theta_solution(X, Gamma, mu, A)
+
+        for j in range(n_components):
+            self.assertTrue(np.allclose(numerical_sol['mu'][j],
+                                        Theta_sol[j]['mu']))
+            offset = (memory - 1) * n_features
+            for m in range(memory):
+                A_sol = np.transpose(Theta_sol[j]['At'][
+                    offset:offset + n_features])
+                self.assertTrue(
+                    np.allclose(
+                        numerical_sol['A'][j][m], A_sol, 1e-4))
+                offset -= n_features
+
+    def test_varx_theta_update_no_u_variable_memory(self):
+        rng = np.random.RandomState(seed=0)
+
+        n_samples = 150
+        n_features = 2
+        n_components = 3
+        memory = [2, 0, 1]
+        max_memory = np.max(memory)
+        n_terms = n_samples - max_memory
+
+        X = rng.rand(n_samples, n_features)
+        Gamma = _random_affiliations(
+            n_terms, n_components, random_state=rng)
+
+        mu = [rng.uniform(size=(n_features,))
+              for i in range(n_components)]
+        A = [rng.uniform(size=(memory[i], n_features, n_features))
+             if memory[i] > 0 else None
+             for i in range(n_components)]
+
+        Theta = [{'mu': mu[i], 'memory': memory[i],
+                  'At': np.vstack([np.transpose(A[i][j])
+                                   for j in range(memory[i] - 1, -1, -1)])
+                  if memory[i] > 0 else None,
+                  'Bt': None, 'Sigma': np.identity(n_features)}
+                 for i in range(n_components)]
+
+        Theta_sol = _fembv_varx_Theta_update(X, Gamma, Theta, None)
+        numerical_sol = _fembv_varx_theta_solution(X, Gamma, mu, A)
+
+        for j in range(n_components):
+            self.assertTrue(np.allclose(numerical_sol['mu'][j],
+                                        Theta_sol[j]['mu']))
+
+            if memory[j] > 0:
+                offset = (memory[j] - 1) * n_features
+                for m in range(memory[j]):
+                    A_sol = np.transpose(Theta_sol[j]['At'][
+                        offset:offset + n_features])
+                    self.assertTrue(
+                        np.allclose(
+                            numerical_sol['A'][j][m], A_sol, 1e-4))
+                    offset -= n_features
+
+    def test_varx_theta_update_u_no_memory(self):
+        rng = np.random.RandomState(seed=0)
+
+        n_samples = 200
+        n_features = 4
+        n_components = 3
+        memory = 0
+        max_memory = np.max(memory)
+        n_terms = n_samples - max_memory
+        n_external = 3
+
+        X = rng.rand(n_samples, n_features)
+        u = rng.rand(n_samples, n_external)
+        Gamma = _random_affiliations(
+            n_terms, n_components, random_state=rng)
+
+        mu = [rng.uniform(size=(n_features,))
+              for i in range(n_components)]
+        B = [rng.uniform(size=(n_features, n_external))
+             for i in range(n_components)]
+
+        Theta = [{'mu': mu[i], 'memory': memory, 'At': None,
+                  'Bt': np.transpose(B[i]),
+                  'Sigma': np.identity(n_features)}
+                 for i in range(n_components)]
+
+        Theta_sol = _fembv_varx_Theta_update(X, Gamma, Theta, u)
+        numerical_sol = _fembv_varx_theta_solution(
+            X, Gamma, mu, A=None, B=B, u=u)
+
+        for j in range(n_components):
+            self.assertTrue(np.allclose(numerical_sol['mu'][j],
+                                        Theta_sol[j]['mu']))
+
+            self.assertTrue(np.allclose(
+                numerical_sol['B'][j],
+                np.transpose(Theta_sol[j]['Bt']), 1e-4))
+
+    def test_varx_theta_update_u_uniform_memory(self):
+        rng = np.random.RandomState(seed=0)
+
+        n_samples = 100
+        n_features = 3
+        n_components = 3
+        memory = 3
+        max_memory = np.max(memory)
+        n_terms = n_samples - max_memory
+        n_external = 2
+
+        X = rng.rand(n_samples, n_features)
+        u = rng.rand(n_samples, n_external)
+        Gamma = _random_affiliations(
+            n_terms, n_components, random_state=rng)
+
+        mu = [rng.uniform(size=(n_features,))
+              for i in range(n_components)]
+        A = [rng.uniform(size=(memory, n_features, n_features))
+             for i in range(n_components)]
+        B = [rng.uniform(size=(n_features, n_external))
+             for i in range(n_components)]
+
+        Theta = [{'mu': mu[i], 'memory': memory,
+                  'At': np.vstack([np.transpose(A[i][j])
+                                   for j in range(memory - 1, -1, -1)]),
+                  'Bt': np.transpose(B[i]),
+                  'Sigma': np.identity(n_features)}
+                 for i in range(n_components)]
+
+        Theta_sol = _fembv_varx_Theta_update(X, Gamma, Theta, u)
+        numerical_sol = _fembv_varx_theta_solution(
+            X, Gamma, mu, A=A, B=B, u=u)
+
+        for j in range(n_components):
+            self.assertTrue(np.allclose(numerical_sol['mu'][j],
+                                        Theta_sol[j]['mu']))
+
+            offset = (memory - 1) * n_features
+            for m in range(memory):
+                A_sol = np.transpose(Theta_sol[j]['At'][
+                    offset:offset + n_features])
+                self.assertTrue(
+                    np.allclose(
+                        numerical_sol['A'][j][m], A_sol,
+                        rtol=1e-3, atol=1e-5))
+                offset -= n_features
+
+            self.assertTrue(np.allclose(
+                numerical_sol['B'][j],
+                np.transpose(Theta_sol[j]['Bt']), 1e-3))
+
+    def test_varx_theta_update_u_variable_memory(self):
+        rng = np.random.RandomState(seed=0)
+
+        n_samples = 150
+        n_features = 2
+        n_components = 3
+        memory = [3, 2, 0]
+        max_memory = np.max(memory)
+        n_terms = n_samples - max_memory
+        n_external = 3
+
+        X = rng.rand(n_samples, n_features)
+        u = rng.rand(n_samples, n_external)
+        Gamma = _random_affiliations(
+            n_terms, n_components, random_state=rng)
+
+        mu = [rng.uniform(size=(n_features,))
+              for i in range(n_components)]
+        A = [rng.uniform(size=(memory[i], n_features, n_features))
+             if memory[i] > 0 else None
+             for i in range(n_components)]
+        B = [rng.uniform(size=(n_features, n_external))
+             for i in range(n_components)]
+
+        Theta = [{'mu': mu[i], 'memory': memory[i],
+                  'At': np.vstack([np.transpose(A[i][j])
+                                   for j in range(memory[i] - 1, -1, -1)])
+                  if memory[i] > 0 else None,
+                  'Bt': np.transpose(B[i]),
+                  'Sigma': np.identity(n_features)}
+                 for i in range(n_components)]
+
+        Theta_sol = _fembv_varx_Theta_update(X, Gamma, Theta, u)
+        numerical_sol = _fembv_varx_theta_solution(
+            X, Gamma, mu, A=A, B=B, u=u)
+
+        for j in range(n_components):
+            self.assertTrue(np.allclose(numerical_sol['mu'][j],
+                                        Theta_sol[j]['mu']))
+
+            if memory[j] > 0:
+                offset = (memory[j] - 1) * n_features
+                for m in range(memory[j]):
+                    A_sol = np.transpose(Theta_sol[j]['At'][
+                        offset:offset + n_features])
+
+                    self.assertTrue(
+                        np.allclose(
+                            numerical_sol['A'][j][m], A_sol,
+                            rtol=1e-3, atol=1e-5))
+                    offset -= n_features
+
+            self.assertTrue(np.allclose(
+                numerical_sol['B'][j],
+                np.transpose(Theta_sol[j]['Bt']), 1e-3))
