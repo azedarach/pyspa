@@ -5,14 +5,18 @@ import numpy as np
 from scipy.optimize import Bounds, LinearConstraint, linprog, minimize
 from scipy.spatial import ConvexHull
 
+from sklearn.utils.validation import check_random_state
+
 from pyspa import fembv_binx
 from pyspa._fembv_binx import (_fembv_binx_cost, _fembv_binx_cost_grad,
                                _fembv_binx_cost_hess,
                                _fembv_binx_lambda_vector,
                                _fembv_binx_Theta_bounds,
-                               _fembv_binx_Theta_constraints)
+                               _fembv_binx_Theta_constraints,
+                               _fembv_binx_Theta_update)
 from pyspa._fembv_generic import (_fembv_Gamma_equality_constraints,
                                   _fembv_Gamma_upper_bound_constraints)
+from pyspa._fembv_varx import (_fembv_varx_cost)
 
 
 def _piecewise_constant_fem_basis(n_samples, n_elem=None, value=1):
@@ -32,13 +36,15 @@ def _piecewise_constant_fem_basis(n_samples, n_elem=None, value=1):
     return V
 
 
-def _random_fem_coefficients(n_elem, n_components):
-    return np.random.uniform(low=0.0, high=1.0, size=(n_elem, n_components))
+def _random_fem_coefficients(n_elem, n_components, random_state=None):
+    rng = check_random_state(random_state)
+    return rng.uniform(low=0.0, high=1.0, size=(n_elem, n_components))
 
 
-def _random_affiliations(n_samples, n_components):
-    Gamma = np.random.uniform(low=0.0, high=1.0,
-                              size=(n_samples, n_components))
+def _random_affiliations(n_samples, n_components, random_state=None):
+    rng = check_random_state(random_state)
+    Gamma = rng.uniform(low=0.0, high=1.0,
+                        size=(n_samples, n_components))
     row_sums = np.sum(Gamma, axis=1)
     return Gamma / row_sums[:, np.newaxis]
 
@@ -85,7 +91,7 @@ def _central_derivative(f, x, args=(), h=1e-6):
     return (f(x + h, *args) - f(x - h, *args)) / (2 * h)
 
 
-def _second_partial_derivative(f, x, i, j, args=(), h=1e-5):
+def _second_partial_derivative(f, x, i, j, args=(), h=1e-4):
     delta_i = np.zeros(x.shape)
     delta_j = np.zeros(x.shape)
 
@@ -524,3 +530,239 @@ class TestFEMBVBINX(unittest.TestCase):
         expected_Theta = np.array([0.5, 0.5])
 
         self.assertTrue(np.allclose(Theta, expected_Theta, atol=0.05))
+
+
+def _ref_fembv_varx_cost(X, Gamma, mu, A=None, B=None, u=None):
+    n_terms, n_components = Gamma.shape
+
+    if len(mu) != n_components:
+        raise ValueError('incorrect number of mu vectors provided')
+
+    if A is not None:
+        if len(A) != n_components:
+            raise ValueError('incorrect number of A matrices provided')
+    if B is not None:
+        if len(B) != n_components:
+            raise ValueError('incorrect number of B matrices provided')
+
+    if A is None:
+        max_memory = 0
+    else:
+        max_memory = np.max(np.array([A[j].shape[0]
+                                      if A[j] is not None else 0
+                                      for j in range(n_components)]))
+
+    cost = 0
+    for i in range(n_terms):
+        t = i + max_memory
+        xt = X[t]
+        for j in range(n_components):
+            muj = mu[j]
+            r = xt - muj
+
+            if A is not None:
+                Aj = A[j]
+                if Aj is not None:
+                    m = Aj.shape[0]
+                    for k in range(m):
+                        xtmk = X[t - k - 1]
+                        r -= np.dot(Aj[k], xtmk)
+
+            if B is not None and u is not None:
+                r -= np.dot(B[j], u[t])
+
+            cost += Gamma[i, j] * np.linalg.norm(r) ** 2
+
+    return cost
+
+
+class TestFEMBVVARX(unittest.TestCase):
+
+    def test_varx_cost_no_u_no_memory(self):
+        rng = np.random.RandomState(seed=0)
+
+        n_samples = 300
+        n_features = 5
+        n_components = 2
+        memory = 0
+        n_terms = n_samples - np.max(memory)
+
+        X = rng.rand(n_samples, n_features)
+        Gamma = _random_affiliations(
+            n_terms, n_components, random_state=rng)
+        mu = [rng.uniform(size=(n_features,))
+              for i in range(n_components)]
+
+        Theta = [{'mu': mu[i], 'memory': memory, 'At': None,
+                  'Bt': None, 'Sigma': np.identity(n_features)}
+                 for i in range(n_components)]
+
+        cost = _fembv_varx_cost(X, Gamma, Theta)
+        expected_cost = _ref_fembv_varx_cost(X, Gamma, mu)
+
+        tol = 1e-9
+        self.assertTrue(np.abs(cost - expected_cost) < tol)
+
+    def test_varx_cost_no_u_uniform_memory(self):
+        rng = np.random.RandomState(seed=0)
+
+        n_samples = 400
+        n_features = 4
+        n_components = 3
+        memory = 2
+        n_terms = n_samples - np.max(memory)
+
+        X = rng.rand(n_samples, n_features)
+        Gamma = _random_affiliations(
+            n_terms, n_components, random_state=rng)
+
+        mu = [rng.uniform(size=(n_features,))
+              for i in range(n_components)]
+        A = [rng.uniform(size=(memory, n_features, n_features))
+             for i in range(n_components)]
+
+        Theta = [{'mu': mu[i], 'memory': memory,
+                  'At': np.vstack([np.transpose(A[i][j])
+                                   for j in range(memory - 1, -1, -1)]),
+                  'Bt': None, 'Sigma': np.identity(n_features)}
+                 for i in range(n_components)]
+
+        cost = _fembv_varx_cost(X, Gamma, Theta)
+        expected_cost = _ref_fembv_varx_cost(X, Gamma, mu, A)
+
+        tol = 1e-9
+        self.assertTrue(np.abs(cost - expected_cost) < tol)
+
+    def test_varx_cost_no_u_variable_memory(self):
+        rng = np.random.RandomState(seed=0)
+
+        n_samples = 300
+        n_features = 5
+        n_components = 3
+        memory = [4, 0, 1]
+        n_terms = n_samples - np.max(memory)
+
+        X = rng.rand(n_samples, n_features)
+        Gamma = _random_affiliations(
+            n_terms, n_components, random_state=rng)
+
+        mu = [rng.uniform(size=(n_features,))
+              for i in range(n_components)]
+        A = [rng.uniform(size=(memory[i], n_features, n_features))
+             if memory[i] > 0 else None
+             for i in range(n_components)]
+
+        Theta = [{'mu': mu[i], 'memory': memory[i],
+                  'At': np.vstack([np.transpose(A[i][j])
+                                   for j in range(memory[i] - 1, -1, -1)])
+                  if memory[i] > 0 else None,
+                  'Bt': None, 'Sigma': np.identity(n_features)}
+                 for i in range(n_components)]
+
+        cost = _fembv_varx_cost(X, Gamma, Theta)
+        expected_cost = _ref_fembv_varx_cost(X, Gamma, mu, A)
+
+        tol = 1e-9
+        self.assertTrue(np.abs(cost - expected_cost) < tol)
+
+    def test_varx_cost_u_no_memory(self):
+        rng = np.random.RandomState(seed=0)
+
+        n_samples = 500
+        n_features = 2
+        n_components = 10
+        memory = 0
+        n_terms = n_samples - np.max(memory)
+        n_external = 5
+
+        X = rng.rand(n_samples, n_features)
+        u = rng.rand(n_samples, n_external)
+        Gamma = _random_affiliations(
+            n_terms, n_components, random_state=rng)
+
+        mu = [rng.uniform(size=(n_features,))
+              for i in range(n_components)]
+        B = [rng.uniform(size=(n_features, n_external))
+             for i in range(n_components)]
+
+        Theta = [{'mu': mu[i], 'memory': memory, 'At': None,
+                  'Bt': np.transpose(B[i]),
+                  'Sigma': np.identity(n_features)}
+                 for i in range(n_components)]
+
+        cost = _fembv_varx_cost(X, Gamma, Theta, u=u)
+        expected_cost = _ref_fembv_varx_cost(X, Gamma, mu, B=B, u=u)
+
+        tol = 1e-9
+        self.assertTrue(np.abs(cost - expected_cost) < tol)
+
+    def test_varx_cost_u_uniform_memory(self):
+        rng = np.random.RandomState(seed=0)
+
+        n_samples = 179
+        n_features = 7
+        n_components = 2
+        memory = 6
+        n_terms = n_samples - np.max(memory)
+        n_external = 3
+
+        X = rng.rand(n_samples, n_features)
+        u = rng.rand(n_samples, n_external)
+        Gamma = _random_affiliations(
+            n_terms, n_components, random_state=rng)
+
+        mu = [rng.uniform(size=(n_features,))
+              for i in range(n_components)]
+        A = [rng.uniform(size=(memory, n_features, n_features))
+             for i in range(n_components)]
+        B = [rng.uniform(size=(n_features, n_external))
+             for i in range(n_components)]
+
+        Theta = [{'mu': mu[i], 'memory': memory,
+                  'At': np.vstack([np.transpose(A[i][j])
+                                   for j in range(memory - 1, -1, -1)]),
+                  'Bt': np.transpose(B[i]),
+                  'Sigma': np.identity(n_features)}
+                 for i in range(n_components)]
+
+        cost = _fembv_varx_cost(X, Gamma, Theta, u=u)
+        expected_cost = _ref_fembv_varx_cost(X, Gamma, mu, A=A, B=B, u=u)
+
+        tol = 1e-9
+        self.assertTrue(np.abs(cost - expected_cost) < tol)
+
+    def test_varx_cost_u_variable_memory(self):
+        rng = np.random.RandomState(seed=0)
+
+        n_samples = 786
+        n_features = 5
+        n_components = 8
+        memory = [1, 0, 0, 3, 4, 2, 8, 0]
+        n_terms = n_samples - np.max(memory)
+        n_external = 6
+
+        X = rng.rand(n_samples, n_features)
+        u = rng.rand(n_samples, n_external)
+        Gamma = _random_affiliations(
+            n_terms, n_components, random_state=rng)
+
+        mu = [rng.uniform(size=(n_features,))
+              for i in range(n_components)]
+        A = [rng.uniform(size=(memory[i], n_features, n_features))
+             if memory[i] > 0 else None
+             for i in range(n_components)]
+        B = [rng.uniform(size=(n_features, n_external))
+             for i in range(n_components)]
+
+        Theta = [{'mu': mu[i], 'memory': memory[i],
+                  'At': np.vstack([np.transpose(A[i][j])
+                                   for j in range(memory[i] - 1, -1, -1)])
+                  if memory[i] > 0 else None,
+                  'Bt': np.transpose(B[i]), 'Sigma': np.identity(n_features)}
+                 for i in range(n_components)]
+
+        cost = _fembv_varx_cost(X, Gamma, Theta, u=u)
+        expected_cost = _ref_fembv_varx_cost(X, Gamma, mu, A=A, B=B, u=u)
+
+        tol = 1e-9
+        self.assertTrue(np.abs(cost - expected_cost) < tol)
