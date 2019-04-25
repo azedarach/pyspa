@@ -41,6 +41,10 @@ def _check_init_fembv_varx_Theta(Theta, n_components, n_features,
             Theta[k]['Sigma'], (n_features, n_features), whom)
 
 
+def _fembv_varx_max_memory(Theta):
+    return np.max(np.array([t['memory'] for t in Theta]))
+
+
 def _initialize_fembv_varx_random(X, n_components, memory=0,
                                   u=None, random_state=None):
     """Return random initial affiliations and model parameters.
@@ -81,13 +85,15 @@ def _initialize_fembv_varx_random(X, n_components, memory=0,
     rng = check_random_state(random_state)
 
     n_samples, n_features = X.shape
+    max_memory = np.max(memory)
+    n_terms = n_samples - max_memory
     if u is None:
         n_external = 0
     else:
         n_external = u.shape[1]
 
     Gamma = right_stochastic_matrix(
-        (n_samples, n_components), random_state=rng)
+        (n_terms, n_components), random_state=rng)
 
     xb = X.mean(axis=0)
     Theta = [{'mu': xb.copy(), 'memory': memory,
@@ -163,37 +169,40 @@ def _initialize_fembv_varx(X, n_components, init='random',
             (init, FEMBV_VARX_INITIALIZATION_METHODS))
 
 
-def _fembv_varx_residuals(X, theta, u=None):
-    n_samples = X.shape[0]
-    m = theta['memory']
-    r = X[m:].copy() - theta['mu'][np.newaxis, :]
-    if m > 0:
-        for i in range(m, n_samples):
-            x_lag = np.ravel(X[i - m:i])
-            r -= np.dot(x_lag, theta['At'])
-    if u is not None:
-        r -= np.dot(u[i], theta['Bt'])
-    return r
+def _fembv_varx_residuals(X, Theta, u=None):
+    n_samples, n_features = X.shape
+    n_components = len(Theta)
+    max_memory = _fembv_varx_max_memory(Theta)
+    n_terms = n_samples - max_memory
+
+    res = np.empty((n_components, n_terms, n_features))
+    for i in range(n_terms):
+        t = i + max_memory
+        for j in range(n_components):
+            m = Theta[j]['memory']
+            res[j, i] = X[t] - Theta[j]['mu']
+            if m > 0:
+                x_lag = np.ravel(X[t - m:t])
+                res[j, i] -= np.dot(x_lag, Theta[j]['At'])
+            if u is not None:
+                res[j, i] -= np.dot(u[t], Theta[j]['Bt'])
+
+    return res
 
 
-def _fembv_varx_residual_norms(X, theta, u=None):
-    residuals = _fembv_varx_residuals(X, theta, u=u)
-    n_residuals = residuals.shape[0]
+def _fembv_varx_residual_norms(X, Theta, u=None):
+    residuals = _fembv_varx_residuals(X, Theta, u=u)
+    n_components, n_residuals = residuals.shape[:2]
 
-    norms = np.zeros(n_residuals)
-    for i in range(n_residuals):
-        norms[i] = np.linalg.norm(residuals[i])
+    norms = np.zeros((n_components, n_residuals))
+    for j in range(n_components):
+        norms[j] = np.linalg.norm(residuals[j], axis=1)
 
     return norms
 
 
 def _fembv_varx_distance_matrix(X, Theta, u=None):
-    n_samples = X.shape[0]
-    n_components = len(Theta)
-    G = np.zeros((n_samples, n_components))
-    for j in range(n_components):
-        G[:, j] = _fembv_varx_residual_norms(X, Theta[j], u=u) ** 2
-    return G
+    return np.transpose(_fembv_varx_residual_norms(X, Theta, u=u) ** 2)
 
 
 def _fembv_varx_cost(X, Gamma, Theta, u=None):
@@ -226,8 +235,7 @@ def _fembv_varx_Theta_update(X, Gamma, Theta, *pars):
     else:
         n_external = u.shape[1]
 
-    max_memory = np.max(np.array([Theta[k]['memory']
-                                  for k in range(n_components)]))
+    max_memory = _fembv_varx_max_memory(Theta)
     Wl = [np.zeros((1 + n_features * Theta[k]['memory'] + n_external,
                     n_features)) for k in range(n_components)]
     Zl = [np.zeros((1 + n_features * Theta[k]['memory'] + n_external,
