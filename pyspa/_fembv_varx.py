@@ -211,14 +211,15 @@ def _fembv_varx_residual_norms(X, Theta, u=None):
     return norms
 
 
-def _fembv_varx_distance_matrix(X, Theta, u=None):
+def _fembv_varx_distance_matrix(X, Theta, *pars):
+    u = pars[0]
     return np.transpose(_fembv_varx_residual_norms(X, Theta, u=u) ** 2)
 
 
 def _fembv_varx_cost(X, Gamma, Theta, u=None):
     return _fembv_generic_cost(
         X, Gamma, Theta, _fembv_varx_distance_matrix,
-        distance_matrix_pars=u)
+        distance_matrix_pars=[u])
 
 
 def _fembv_varx_Sigma_estimate(X, Gamma, Theta, u=None):
@@ -353,7 +354,7 @@ def fembv_varx(X, Gamma=None, Theta=None, u=None, n_components=None, memory=0,
         Gamma, Theta, n_iter = _fit_generic_fembv_subspace(
             X, Gamma, Theta, _fembv_varx_distance_matrix,
             _fembv_varx_Theta_update,
-            theta_update_pars=None, distance_matrix_pars=u,
+            theta_update_pars=[u], distance_matrix_pars=[u],
             epsilon_Theta=0, regularization_Theta=None,
             tol=tol, max_iter=max_iter, update_Theta=update_Theta,
             max_tv_norm=max_tv_norm, fem_basis=fem_basis,
