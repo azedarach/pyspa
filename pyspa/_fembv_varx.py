@@ -46,7 +46,8 @@ def _fembv_varx_max_memory(Theta):
 
 
 def _initialize_fembv_varx_random(X, n_components, memory=0,
-                                  u=None, random_state=None):
+                                  u=None, random_state=None,
+                                  random_Theta=True):
     """Return random initial affiliations and model parameters.
 
     The affiliations matrix is first initialized with uniformly
@@ -104,10 +105,19 @@ def _initialize_fembv_varx_random(X, n_components, memory=0,
         if memory > 0:
             Theta[k]['At'] = np.empty((memory * n_features, n_features))
             for i in range(memory):
-                Theta[k]['At'][i * n_features:
-                               (i + 1) * n_features] = np.identity(n_features)
+                if random_Theta:
+                    Theta[k]['At'][i * n_features:
+                                   (i + 1) * n_features] = rng.uniform(
+                        size=(n_features, n_features))
+                else:
+                    Theta[k]['At'][i * n_features:
+                                   (i + 1) * n_features] = np.identity(
+                        n_features)
         if u is not None:
-            Theta[k]['Bt'] = np.zeros((n_external, n_features))
+            if random_Theta:
+                Theta[k]['Bt'] = rng.uniform(size=(n_external, n_features))
+            else:
+                Theta[k]['Bt'] = np.zeros((n_external, n_features))
 
     return Gamma, Theta
 
