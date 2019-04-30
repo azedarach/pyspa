@@ -515,9 +515,9 @@ class FEMBVVARX(object):
             fem_basis=self.fem_basis, verbose=self.verbose,
             **self.params)
 
-        self.cost_ = _fembv_varx_cost(X, Gamma, Theta, u=u)
+        self.cost_ = _fembv_varx_cost(X, Gamma, Theta, u)
 
-        self.n_components_ = Theta.shape[0]
+        self.n_components_ = len(Theta)
         self.components_ = Theta
         self.n_iter_ = n_iter_
 
