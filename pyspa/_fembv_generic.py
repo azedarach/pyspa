@@ -1,4 +1,4 @@
-from __future__ import division
+from __future__ import (division, print_function)
 
 import numpy as np
 import os
@@ -49,9 +49,9 @@ def _check_init_fembv_Gamma(Gamma, shape, whom):
 
 
 def _fembv_generic_cost(X, Gamma, Theta, distance_matrix,
-                        distance_matrix_pars=None,
+                        distance_matrix_pars=(),
                         epsilon_Theta=0, regularization_Theta=None):
-    G = distance_matrix(X, Theta, distance_matrix_pars)
+    G = distance_matrix(X, Theta, *distance_matrix_pars)
     cost = np.trace(np.dot(np.transpose(Gamma), G))
     if regularization_Theta is not None and epsilon_Theta != 0:
         cost += epsilon_Theta * regularization_Theta(Theta)
@@ -356,7 +356,7 @@ def _fit_generic_fembv_subspace(X, Gamma, Theta, distance_matrix, theta_update,
         if update_Theta:
             Theta = theta_update(X, Gamma, Theta, *theta_update_pars)
 
-        G = distance_matrix(X, Theta, distance_matrix_pars)
+        G = distance_matrix(X, Theta, *distance_matrix_pars)
         Gamma, _ = _subspace_update_fembv_Gamma(
             G, V, A_ub=A_ub, b_ub=b_ub, A_eq=A_eq, b_eq=b_eq,
             max_iter=max_iter, method=method, verbose=verbose)
