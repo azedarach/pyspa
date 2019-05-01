@@ -235,7 +235,6 @@ def _fembv_binx_distance_matrix(YX, Theta, u=None):
 
 def _fembv_binx_Theta_regularization(Theta, u=None, epsilon_Theta=0, *pars):
     if u is None:
-        print('reg = ', np.sum(Theta))
         return np.sum(Theta)
     else:
         return np.sum(Theta ** 2)
@@ -452,7 +451,6 @@ def _fembv_binx_Theta_update(YX, Gamma, Theta, *pars, **kwargs):
 
     n_components, n_pars = Theta.shape
 
-    row_sums = np.sum(Theta, axis=1)
     x0 = np.ravel(Theta)
 
     args = (YX, Gamma, u, epsilon_Theta)
@@ -489,9 +487,9 @@ def _fembv_binx_Theta_update(YX, Gamma, Theta, *pars, **kwargs):
     if 'method' in kwargs:
         method = kwargs['method']
     else:
-        method = 'slsqp' #'trust-constr'
+        method = 'trust-constr'
 
-    options = {'disp': verbose > 0,}
+    options = {'disp': verbose > 0}
     if 'max_iter' in kwargs:
         options['maxiter'] = kwargs['max_iter']
     else:
@@ -501,13 +499,10 @@ def _fembv_binx_Theta_update(YX, Gamma, Theta, *pars, **kwargs):
                    bounds=bounds, constraints=constraints,
                    method=method, tol=tol, options=options,
                    **kwargs)
-    print('res = ', res)
 
     if not res['success']:
-        print('minimization of FEM-BV-BINX cost function failed')
         warnings.warn(
             'minimization of FEM-BV-BINX cost function failed', UserWarning)
-#        raise RuntimeError('minimization of FEM-BV-BINX cost function failed')
 
     sol = res['x']
 
