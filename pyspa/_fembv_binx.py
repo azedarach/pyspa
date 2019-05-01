@@ -227,12 +227,7 @@ def _fembv_binx_distance_matrix(YX, Theta, u=None):
             else:
                 lam = _fembv_binx_lambda_vector(j, Theta, u=u[i, :])
             lxp = _sanitize_probability(np.dot(lam, X[i, :]))
-            if lxp < 0 or lxp > 1:
-                print('lxp = ', lxp)
-                print('lxp - 1 = %14.8e' % (lxp - 1))
-                print('Theta = ', Theta)
-                print('row_sums = ', np.sum(Theta, axis=1))
-                print('dist = ', -((1 - Y[i]) * np.log(1 - lxp) + Y[i] * np.log(lxp)))
+
             G[i, j] = -((1 - Y[i]) * np.log(1 - lxp) + Y[i] * np.log(lxp))
 
     return G
@@ -372,7 +367,7 @@ def _fembv_binx_cost_hess(YX, Gamma, Theta, u=None, epsilon_Theta=0):
 def _fembv_binx_cost(YX, Gamma, Theta, u=None, epsilon_Theta=0):
     return _fembv_generic_cost(
         YX, Gamma, Theta, _fembv_binx_distance_matrix,
-        distance_matrix_pars=u, epsilon_Theta=epsilon_Theta,
+        distance_matrix_pars=[u], epsilon_Theta=epsilon_Theta,
         regularization_Theta=_fembv_binx_Theta_regularization)
 
 
@@ -576,8 +571,6 @@ def fembv_binx(X, Y, Gamma=None, Theta=None, u=None, n_components=None,
     else:
         yx = np.hstack([Y, X])
 
-    np.savetxt('test.csv', yx, delimiter=',')
-
     theta_update_bounds = _fembv_binx_Theta_bounds(
         n_components, n_features, u=u)
     theta_update_constraints = _fembv_binx_Theta_constraints(
@@ -606,7 +599,7 @@ def fembv_binx(X, Y, Gamma=None, Theta=None, u=None, n_components=None,
         Gamma, Theta, n_iter = _fit_generic_fembv_subspace(
             yx, Gamma, Theta, _fembv_binx_distance_matrix,
             _fembv_binx_Theta_update,
-            theta_update_pars=theta_update_pars, distance_matrix_pars=u,
+            theta_update_pars=theta_update_pars, distance_matrix_pars=[u],
             epsilon_Theta=epsilon_Theta,
             regularization_Theta=_fembv_binx_Theta_regularization,
             tol=tol, max_iter=max_iter, update_Theta=update_Theta,
