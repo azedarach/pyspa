@@ -572,7 +572,7 @@ def fembv_binx(X, Y, Gamma=None, Theta=None, u=None, n_components=None,
         n_components, n_features, u=u)
     theta_update_pars = (u, epsilon_Theta,
                          theta_update_bounds, theta_update_constraints,
-                         verbose, tol)
+                         verbose, 1e-12)
 
     if init == 'custom' and update_Theta:
         _check_init_fembv_Gamma(Gamma, (n_samples, n_components),
