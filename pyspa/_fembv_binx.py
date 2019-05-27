@@ -233,7 +233,7 @@ def _fembv_binx_distance_matrix(YX, Theta, u=None):
     return G
 
 
-def _fembv_binx_Theta_regularization(Theta, u=None, epsilon_Theta=0, *pars):
+def _fembv_binx_Theta_regularization(Theta, u=None, *pars):
     if u is None:
         return np.sum(Theta)
     else:
@@ -360,7 +360,7 @@ def _fembv_binx_regularization_hess(Theta, u=None, epsilon_Theta=0):
 def _fembv_binx_cost_hess(YX, Gamma, Theta, u=None, epsilon_Theta=0):
     return (_fembv_binx_distance_hess(YX, Gamma, Theta, u=u) +
             _fembv_binx_regularization_hess(
-                Theta, epsilon_Theta=epsilon_Theta))
+                Theta, epsilon_Theta=epsilon_Theta, u=u))
 
 
 def _fembv_binx_cost(YX, Gamma, Theta, u=None, epsilon_Theta=0):
@@ -441,6 +441,97 @@ def _fembv_binx_Theta_constraints(n_components, n_features, u=None):
     return LinearConstraint(A_bounds, 0, 1, keep_feasible=True)
 
 
+# def _fembv_binx_Theta_update_cvxopt(YX, Gamma, Theta, *pars, **kwargs):
+#     u = pars[0]
+#     epsilon_Theta = pars[1]
+#     verbose = pars[4]
+#     tol = pars[5]
+
+#     if u is not None:
+#         raise NotImplementedError(
+#             'cvxopt solver not implemented for external factors')
+
+#     n_components, n_component_pars = Theta.shape
+#     n_pars = n_components * n_component_pars
+
+#     x0 = cvxopt.matrix(np.ravel(Theta))
+
+#     def is_feasible(theta):
+#         if np.any(theta < 0):
+#             return False
+#         if np.any(np.sum(theta, axis=1) >= 1):
+#             return False
+#         return True
+
+#     def F(x=None, z=None):
+#         if x is None:
+#             return 0, x0
+
+#         theta = np.empty((n_components, n_component_pars))
+#         for i in range(n_components):
+#             for j in range(n_component_pars):
+#                 theta[i, j] = x[i * n_component_pars + j]
+
+#         if not is_feasible(theta):
+#             return None
+
+#         f = _fembv_binx_cost(YX, Gamma, theta, u=u,
+#                              epsilon_Theta=epsilon_Theta)
+#         jac_mat = _fembv_binx_cost_grad(
+#             YX, Gamma, theta, u=u, epsilon_Theta=epsilon_Theta)
+#         Df = cvxopt.matrix(np.ravel(jac_mat)).T
+
+#         if z is None:
+#             return f, Df
+
+#         hess_mat = _fembv_binx_cost_hess(
+#             YX, Gamma, theta, u=u, epsilon_Theta=epsilon_Theta)
+
+#         H = z[0] * cvxopt.matrix(hess_mat)
+
+#         return f, Df, H
+
+#     A_sum = np.zeros((n_components, n_pars))
+#     for i in range(n_components):
+#         A_sum[i, i * n_component_pars:(i + 1) * n_component_pars] = 1
+
+#     G_pos = cvxopt.spmatrix(-1.0, range(n_pars), range(n_pars))
+#     G_sum = cvxopt.matrix(A_sum)
+
+#     h_pos = cvxopt.matrix(0, (n_pars, 1), 'd')
+#     h_sum = cvxopt.matrix(1, (n_components, 1), 'd')
+
+#     G = cvxopt.matrix([G_pos, G_sum])
+#     h = cvxopt.matrix([h_pos, h_sum])
+
+#     if verbose > 0:
+#         cvxopt.solvers.options['show_progress'] = True
+#     else:
+#         cvxopt.solvers.options['show_progress'] = True
+
+#     if 'max_iter' in kwargs:
+#         cvxopt.solvers.options['maxiters'] = kwargs['max_iter']
+
+#     cvxopt.solvers.options['reltol'] = tol
+#     cvxopt.solvers.options['abstol'] = tol
+#     print('calling cp')
+#     status = cvxopt.solvers.cp(F, G=G, h=h)
+#     print(status)
+
+#     if not status['status'] == 'optimal':
+#         warnings.warn(
+#             'minimization of FEM-BV-BINX cost function failed', UserWarning)
+
+#     sol = status['x']
+
+#     result = np.empty((n_components, n_component_pars))
+#     for i in range(n_components):
+#         for j in range(n_component_pars):
+#             result[i, j] = sol[i * n_component_pars + j]
+
+#     return result
+
+
 def _fembv_binx_Theta_update(YX, Gamma, Theta, *pars, **kwargs):
     u = pars[0]
     epsilon_Theta = pars[1]
@@ -497,8 +588,8 @@ def _fembv_binx_Theta_update(YX, Gamma, Theta, *pars, **kwargs):
 
     res = minimize(f, x0, args=args, jac=jac, hess=hess,
                    bounds=bounds, constraints=constraints,
-                   method=method, tol=tol, options=options,
-                   **kwargs)
+                   tol=tol, options=options,
+                   method=method)
 
     if not res['success']:
         warnings.warn(
@@ -514,6 +605,7 @@ def fembv_binx(X, Y, Gamma=None, Theta=None, u=None, n_components=None,
                solver='subspace', tol=1e-4, max_iter=200, random_state=None,
                max_tv_norm=None, fem_basis='constant',
                method='interior-point', verbose=0,
+               theta_update_method='trust-constr', theta_update_tol=1e-12,
                checkpoint=False, checkpoint_file=None, checkpoint_iter=None):
     if X.ndim == 1:
         n_samples = X.shape[0]
@@ -577,7 +669,8 @@ def fembv_binx(X, Y, Gamma=None, Theta=None, u=None, n_components=None,
         n_components, n_features, u=u)
     theta_update_pars = (u, epsilon_Theta,
                          theta_update_bounds, theta_update_constraints,
-                         verbose, 1e-12)
+                         verbose, theta_update_tol)
+    theta_update_kwargs = {'method': theta_update_method, 'max_iter': max_iter}
 
     if init == 'custom' and update_Theta:
         _check_init_fembv_Gamma(Gamma, (n_samples, n_components),
@@ -599,7 +692,9 @@ def fembv_binx(X, Y, Gamma=None, Theta=None, u=None, n_components=None,
         Gamma, Theta, n_iter = _fit_generic_fembv_subspace(
             yx, Gamma, Theta, _fembv_binx_distance_matrix,
             _fembv_binx_Theta_update,
-            theta_update_pars=theta_update_pars, distance_matrix_pars=[u],
+            theta_update_pars=theta_update_pars,
+            theta_update_kwargs=theta_update_kwargs,
+            distance_matrix_pars=[u],
             epsilon_Theta=epsilon_Theta,
             regularization_Theta=_fembv_binx_Theta_regularization,
             tol=tol, max_iter=max_iter, update_Theta=update_Theta,

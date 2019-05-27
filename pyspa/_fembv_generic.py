@@ -217,6 +217,7 @@ def _subspace_update_fembv_Gamma(G, basis_values, A_ub, b_ub, A_eq, b_eq,
         is_sparse = False
     options = {'disp': verbose > 0, 'maxiter': max_iter,
                'tol': tol, 'sparse': is_sparse, 'presolve': True}
+
     res = linprog(g_vec, A_ub=A_ub, b_ub=b_ub, A_eq=A_eq, b_eq=b_eq,
                   bounds=bounds, method=method, options=options)
 
@@ -237,6 +238,7 @@ def _subspace_update_fembv_Gamma(G, basis_values, A_ub, b_ub, A_eq, b_eq,
 def _fit_generic_fembv_subspace(X, Gamma, Theta, distance_matrix, theta_update,
                                 distance_matrix_pars=(),
                                 theta_update_pars=(),
+                                theta_update_kwargs={},
                                 max_tv_norm=None,
                                 epsilon_Theta=0, regularization_Theta=None,
                                 tol=1e-4, max_iter=200, fem_basis='triangle',
@@ -380,7 +382,8 @@ def _fit_generic_fembv_subspace(X, Gamma, Theta, distance_matrix, theta_update,
             start_cost = initial_cost
 
         if update_Theta:
-            Theta = theta_update(X, Gamma, Theta, *theta_update_pars)
+            Theta = theta_update(X, Gamma, Theta, *theta_update_pars,
+                                 **theta_update_kwargs)
 
         G = distance_matrix(X, Theta, *distance_matrix_pars)
         Gamma, _ = _subspace_update_fembv_Gamma(
