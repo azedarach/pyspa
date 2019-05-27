@@ -42,6 +42,17 @@ def _check_array_shape(A, shape, whom):
             'Expected %s, but got %s' % (whom, shape, np.shape(A)))
 
 
+def _check_fem_basis(V, n_samples, whom):
+    if V.shape[0] != n_samples:
+        raise ValueError(
+            'Array with wrong number of rows passed to %s. '
+            'Expected %d, but got %d' % (whom, n_samples, V.shape[0]))
+    if np.any(V < 0):
+        raise ValueError(
+            'Basis elements with negative values passed to %s. '
+            'FEM basis functions must be non-negative' % whom)
+
+
 def _check_init_fembv_Gamma(Gamma, shape, whom):
     Gamma = check_array(Gamma)
     _check_array_shape(Gamma, shape, whom)
@@ -110,7 +121,18 @@ def _fembv_Gamma_upper_bound_constraints(n_components, V, max_tv_norm=None):
 
     A_pos = sps.bmat([[-V_expanded, None],
                       [None, -V_expanded[:-n_components]]])
-    b_pos = np.zeros(n_gamma_points + n_eta_points)
+
+    bounds = [(None, None)] * 2 * n_coeffs
+
+    trivial_bounds_rows = np.array(np.sum(A_pos != 0, axis=1) == 1).flatten()
+    if np.any(trivial_bounds_rows):
+        A_pos = A_pos.tolil()
+        trivial_cols = A_pos[trivial_bounds_rows, :].nonzero()[1]
+        for c in trivial_cols:
+            bounds[c] = (0, None)
+        A_pos = A_pos[np.logical_not(trivial_bounds_rows), :]
+
+    b_pos = np.zeros(A_pos.shape[0])
 
     A_aux = sps.bmat([[DV_expanded, -V_expanded[:-n_components]],
                       [-DV_expanded, -V_expanded[:-n_components]]])
@@ -119,7 +141,7 @@ def _fembv_Gamma_upper_bound_constraints(n_components, V, max_tv_norm=None):
     if max_tv_norm is None:
         A_ub = sps.vstack([A_pos, A_aux])
         b_ub = np.concatenate([b_pos, b_aux])
-        return A_ub, b_ub
+        return A_ub, b_ub, bounds
 
     A_bv = sps.lil_matrix((n_components, 2 * n_coeffs))
     for i in range(n_components):
@@ -138,7 +160,7 @@ def _fembv_Gamma_upper_bound_constraints(n_components, V, max_tv_norm=None):
     A_csr = A_ub.tocsr()
     A_csr.eliminate_zeros()
 
-    return A_csr, b_ub
+    return A_csr, b_ub, bounds
 
 
 def _subspace_update_fembv_Gamma(G, basis_values, A_ub, b_ub, A_eq, b_eq,
@@ -217,7 +239,7 @@ def _fit_generic_fembv_subspace(X, Gamma, Theta, distance_matrix, theta_update,
                                 theta_update_pars=(),
                                 max_tv_norm=None,
                                 epsilon_Theta=0, regularization_Theta=None,
-                                tol=1e-4, max_iter=200, fem_basis='constant',
+                                tol=1e-4, max_iter=200, fem_basis='triangle',
                                 method='interior-point',
                                 update_Theta=True, verbose=0,
                                 checkpoint=False, checkpoint_file=None,
@@ -288,8 +310,10 @@ def _fit_generic_fembv_subspace(X, Gamma, Theta, distance_matrix, theta_update,
         signature fem_basis(n_samples), and should return an
         array of shape (n_samples, n_elements) where n_elements is
         the number of finite-element basis functions, containing the
-        values of the basis functions at each grid point. If None,
-        defaults to piecewise constant basis functions.
+        values of the basis functions at each grid point. The basis
+        functions must take non-negative values at each grid point.
+
+        If None, defaults to triangular basis functions.
 
     method : None | 'interior-point' | 'simplex'
         Method used to initialize the algorithm.
@@ -329,18 +353,20 @@ def _fit_generic_fembv_subspace(X, Gamma, Theta, distance_matrix, theta_update,
     n_iter : integer
         The number of iterations done in the algorithm.
     """
-    if fem_basis is None or fem_basis == 'constant':
-        fem_basis = PiecewiseConstantFEMBasis()
-    elif fem_basis == 'triangle':
+    if fem_basis is None or fem_basis == 'triangle':
         fem_basis = TriangleFEMBasis()
+    elif fem_basis == 'constant':
+        fem_basis = PiecewiseConstantFEMBasis()
     elif not callable(fem_basis):
         raise ValueError('finite-element basis must be callable')
 
     n_samples, n_components = Gamma.shape
+
     V = fem_basis(n_samples)
+    _check_fem_basis(V, n_samples, '_fit_generic_fembv_subspace')
 
     A_eq, b_eq = _fembv_Gamma_equality_constraints(n_components, V)
-    A_ub, b_ub = _fembv_Gamma_upper_bound_constraints(
+    A_ub, b_ub, gamma_bounds = _fembv_Gamma_upper_bound_constraints(
         n_components, V, max_tv_norm=max_tv_norm)
 
     for n_iter in range(max_iter):
@@ -359,7 +385,8 @@ def _fit_generic_fembv_subspace(X, Gamma, Theta, distance_matrix, theta_update,
         G = distance_matrix(X, Theta, *distance_matrix_pars)
         Gamma, _ = _subspace_update_fembv_Gamma(
             G, V, A_ub=A_ub, b_ub=b_ub, A_eq=A_eq, b_eq=b_eq,
-            max_iter=max_iter, method=method, verbose=verbose)
+            max_iter=max_iter, method=method, verbose=verbose,
+            bounds=gamma_bounds)
 
         final_cost = _fembv_generic_cost(
             X, Gamma, Theta, distance_matrix,
