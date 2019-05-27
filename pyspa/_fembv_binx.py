@@ -558,6 +558,11 @@ def fembv_binx(X, Y, Gamma=None, Theta=None, u=None, n_components=None,
         raise ValueError(
             'data matrix Y must be a binary variable (values 0 or 1)')
 
+    invalid_x_vals = np.any(np.logical_or(X < 0, X > 1))
+    if invalid_x_vals:
+        raise ValueError(
+            'data matrix X must contain elements between 0 and 1')
+
     if Y.ndim == 1 and X.ndim == 1:
         yx = np.hstack([np.reshape(Y, (n_samples, 1)),
                         np.reshape(X, (n_samples, 1))])
