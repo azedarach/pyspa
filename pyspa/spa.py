@@ -87,7 +87,11 @@ def _euclidean_spa_dist(X, Gamma, S, normalize=True):
         The Frobenius norm of the difference between the original data ``X``
         and the reconstructed data ``Gamma S`` with the desired normalization.
     """
-    dist = np.linalg.norm(X - np.dot(Gamma, S), 'fro') ** 2
+    if X.ndim == 1:
+        X_mat = np.reshape(X, (X.shape[0], 1))
+    else:
+        X_mat = X
+    dist = np.linalg.norm(X_mat - np.dot(Gamma, S), 'fro') ** 2
     if normalize:
         return dist / np.size(X)
     else:
