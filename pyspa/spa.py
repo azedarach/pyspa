@@ -538,7 +538,14 @@ def euclidean_spa(X, Gamma=None, S=None, n_components=None,
     n_iter : integer
         The number of iterations done in the algorithm.
     """
-    n_samples, n_features = X.shape
+    if X.ndim == 1:
+        n_samples = X.shape[0]
+        n_features = 1
+        data = np.reshape(X, (n_samples, n_features))
+    else:
+        n_samples, n_features = X.shape
+        data = X
+
     if n_components is None:
         n_components = n_features
 
@@ -575,11 +582,11 @@ def euclidean_spa(X, Gamma=None, S=None, n_components=None,
             (n_samples, n_components), random_state=random_state)
     else:
         Gamma, S = _initialize_euclidean_spa(
-            X, n_components, init=init, random_state=random_state)
+            data, n_components, init=init, random_state=random_state)
 
     if solver == 'subspace':
         Gamma, S, n_iter = _fit_euclidean_spa_subspace(
-            X, Gamma, S, tol, max_iter,
+            data, Gamma, S, tol, max_iter,
             epsilon_states, update_S=update_S,
             verbose=verbose,
             checkpoint=checkpoint, checkpoint_file=checkpoint_file,
