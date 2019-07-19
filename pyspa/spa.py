@@ -354,6 +354,7 @@ def _subspace_update_euclidean_spa_Gamma(X, Gamma, S, tol=1e-4,
 
 def _fit_euclidean_spa_subspace(X, Gamma, S, tol=1e-4, max_iter=200,
                                 epsilon_states=0, update_S=True, verbose=0,
+                                check_relative_convergence=False,
                                 checkpoint=False, checkpoint_file=None,
                                 checkpoint_iter=None):
     """Compute SPA discretization using subspace algorithm.
@@ -384,6 +385,9 @@ def _fit_euclidean_spa_subspace(X, Gamma, S, tol=1e-4, max_iter=200,
 
     verbose : integer, default: 0
         The verbosity level.
+
+    check_relative_convergence : boolean, default: False
+        Check both absolute and relative convergence conditions.
 
     checkpoint : boolean, default: False
         If True, write current solution to specified checkpoint file.
@@ -439,7 +443,8 @@ def _fit_euclidean_spa_subspace(X, Gamma, S, tol=1e-4, max_iter=200,
             _create_spa_checkpoint(Gamma, S, checkpoint_file)
 
         converged = _euclidean_spa_convergence_check(
-            initial_cost, final_cost, tol)
+            initial_cost, final_cost, tol,
+            check_relative=check_relative_convergence)
 
         if converged:
             if verbose:
@@ -452,7 +457,8 @@ def _fit_euclidean_spa_subspace(X, Gamma, S, tol=1e-4, max_iter=200,
 def euclidean_spa(X, Gamma=None, S=None, n_components=None,
                   init=None, update_S=True, solver='subspace', tol=1e-4,
                   max_iter=200, random_state=None, epsilon_states=0,
-                  verbose=0, checkpoint=False, checkpoint_file=None,
+                  verbose=0, check_relative_convergence=False,
+                  checkpoint=False, checkpoint_file=None,
                   checkpoint_iter=None):
     r"""Compute SPA discretization using Euclidean cost function.
 
@@ -526,6 +532,9 @@ def euclidean_spa(X, Gamma=None, S=None, n_components=None,
     verbose : integer, default: 0
         The verbosity level.
 
+    check_relative_convergence : boolean, default: False
+        Check both absolute and relative convergence conditions.
+
     checkpoint : boolean, default: False
         If True, write current solution to specified checkpoint file.
 
@@ -597,6 +606,7 @@ def euclidean_spa(X, Gamma=None, S=None, n_components=None,
             data, Gamma, S, tol, max_iter,
             epsilon_states, update_S=update_S,
             verbose=verbose,
+            check_relative_convergence=check_relative_convergence,
             checkpoint=checkpoint, checkpoint_file=checkpoint_file,
             checkpoint_iter=checkpoint_iter)
     else:
