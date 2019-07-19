@@ -151,9 +151,13 @@ def _euclidean_spa_cost(X, Gamma, S, epsilon_states=0,
     return cost
 
 
-def _euclidean_spa_convergence_check(old_cost, new_cost, tol):
+def _euclidean_spa_convergence_check(old_cost, new_cost, tol,
+                                     check_relative=False):
     """Return True if change in cost function is below desired tolerance."""
     delta_cost = np.abs(old_cost - new_cost)
+
+    if not check_relative:
+        return delta_cost < tol
 
     if np.abs(old_cost) > np.abs(new_cost):
         min_cost = new_cost
